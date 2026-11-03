@@ -66,7 +66,10 @@ async def require_token(request: Request, call_next):
             supplied = auth[7:].strip()
         if not hmac.compare_digest(supplied, token):
             return JSONResponse({"detail": "login required"}, status_code=401)
-    return await call_next(request)
+    response = await call_next(request)
+    if not path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"  # revalidate, so an updated app.js is picked up
+    return response
 
 
 class Login(BaseModel):
@@ -133,7 +136,7 @@ def _account(conn, account_id: int) -> dict:
 @app.get("/api/accounts")
 def list_accounts():
     with db.connect() as conn:
-        return db.rows(conn, "SELECT * FROM accounts WHERE archived = 0 ORDER BY kind, name")
+        return db.rows(conn, "SELECT * FROM accounts WHERE archived = 0 ORDER BY institution, kind, name")
 
 
 @app.post("/api/accounts")
@@ -298,7 +301,11 @@ async def upload(file: UploadFile, background: BackgroundTasks):
 
 def _upload_out(u: dict) -> dict:
     u = {k: v for k, v in u.items() if k != "path"}
-    u["extracted"] = json.loads(u.pop("extracted_json")) if u.get("extracted_json") else None
+    x = json.loads(u.pop("extracted_json")) if u.get("extracted_json") else None
+    if x is not None and "accounts" not in x:  # read before multi-account extraction: one account
+        x["accounts"] = [{"account_id": x.get("account_id"), "name": x.get("institution") or "", "kind": "cash",
+                          "balance": x.get("balance"), "currency": x.get("currency"), "positions": x.get("positions", [])}]
+    u["extracted"] = x
     return u
 
 
@@ -333,12 +340,18 @@ class PositionIn(BaseModel):
     currency: Optional[str] = None
 
 
-class ApplyIn(BaseModel):
-    account_id: int
-    as_of: date
+class ApplyItem(BaseModel):
+    """One account found in the file: booked to an existing account, or to a new one (new_account)."""
+    account_id: Optional[int] = None
+    new_account: Optional[AccountIn] = None
     balance: Optional[float] = None
     replace_holdings: bool = False
     positions: list[PositionIn] = []
+
+
+class ApplyIn(BaseModel):
+    as_of: date
+    items: list[ApplyItem] = Field(min_length=1)
 
 
 def _positions_to_holdings(positions: list[PositionIn], account_currency: str) -> tuple[list[HoldingIn], list[str]]:
@@ -367,20 +380,39 @@ def _positions_to_holdings(positions: list[PositionIn], account_currency: str) -
 
 @app.post("/api/uploads/{upload_id}/apply")
 def apply_upload(upload_id: int, body: ApplyIn):
+    for item in body.items:
+        if (item.account_id is None) == (item.new_account is None):
+            raise HTTPException(422, "each item needs either account_id or new_account")
     notes: list[str] = []
+    replaced = False
     with db.connect() as conn:
         _upload(conn, upload_id)
-        account = _account(conn, body.account_id)
-    if body.replace_holdings and body.positions:
-        holdings, notes = _positions_to_holdings(body.positions, account["currency"])
-        with db.connect() as conn:
-            _replace_holdings(conn, account["id"], holdings)
+        accounts = [_account(conn, i.account_id) if i.account_id is not None else None for i in body.items]
+    # Look up tickers before writing anything, so a slow search doesn't hold the database.
+    holdings_by_item = {}
+    for n, item in enumerate(body.items):
+        if item.replace_holdings and item.positions:
+            currency = accounts[n]["currency"] if accounts[n] else item.new_account.currency
+            holdings_by_item[n], item_notes = _positions_to_holdings(item.positions, currency)
+            notes += item_notes
     with db.connect() as conn:
-        if body.balance is not None:
-            _add_balance(conn, account["id"], body.as_of.isoformat(), body.balance, "upload", f"upload #{upload_id}")
+        for n, item in enumerate(body.items):
+            if item.new_account:
+                new = item.new_account
+                cur = conn.execute(
+                    "INSERT INTO accounts (name, institution, kind, currency, valuation) VALUES (?, ?, ?, ?, ?)",
+                    (new.name, new.institution, new.kind, new.currency, new.valuation))
+                account_id = cur.lastrowid
+            else:
+                account_id = item.account_id
+            if n in holdings_by_item:
+                _replace_holdings(conn, account_id, holdings_by_item[n])
+                replaced = True
+            if item.balance is not None:
+                _add_balance(conn, account_id, body.as_of.isoformat(), item.balance, "upload", f"upload #{upload_id}")
         conn.execute("UPDATE uploads SET status = 'applied' WHERE id = ?", (upload_id,))
-    errors = valuation.refresh() if body.replace_holdings else []
-    if not body.replace_holdings:
+    errors = valuation.refresh() if replaced else []
+    if not replaced:
         valuation.record_today()
     return {"ok": True, "notes": notes, "errors": errors}
 

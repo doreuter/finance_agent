@@ -1,11 +1,12 @@
-"""Read a balance and positions out of a screenshot, PDF statement or CSV export with Claude."""
+"""Read the balances and positions of one or more accounts out of a screenshot, PDF statement or CSV export with Claude."""
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import anthropic
 from pydantic import BaseModel, Field
@@ -30,27 +31,38 @@ class Position(BaseModel):
     currency: Optional[str] = Field(None, description="ISO currency of the value, e.g. CHF")
 
 
+class FoundAccount(BaseModel):
+    account_id: Optional[int] = Field(None, description="id of the matching account from the user's list, or null if it is not clearly the same account")
+    name: str = Field(description="Account name as shown, e.g. 'Privatkonto', 'Space Ferien', 'Tagesgeld', 'Visa Card'")
+    kind: Literal["cash", "depot", "pillar3a", "pillar2"] = Field(description="cash for current/savings/credit card accounts, depot for securities")
+    balance: Optional[float] = Field(None, description="Value/balance of this account on as_of, in currency; credit card debt is negative")
+    currency: Optional[str] = Field(None, description="ISO currency of balance, e.g. CHF")
+    positions: list[Position] = Field(default_factory=list, description="Securities/funds held in this account, if listed")
+
+
 class Extraction(BaseModel):
-    account_id: Optional[int] = Field(None, description="id of the matching account from the list, or null if unsure")
     institution: Optional[str] = Field(None, description="Bank or provider the document is from, e.g. Neon, DKB, VIAC, AXA")
-    as_of: Optional[str] = Field(None, description="Date the balance refers to, YYYY-MM-DD")
-    balance: Optional[float] = Field(None, description="Total account value/balance on as_of, in currency")
-    currency: Optional[str] = Field(None, description="ISO currency of balance")
-    positions: list[Position] = Field(default_factory=list, description="Securities/funds held, if the document lists them")
+    as_of: Optional[str] = Field(None, description="Date the balances refer to, YYYY-MM-DD")
+    accounts: list[FoundAccount] = Field(default_factory=list, description="One entry per account shown in the document")
     notes: str = Field("", description="One or two sentences: what the document is and anything uncertain")
 
 
 SYSTEM = """You read personal finance documents (banking app screenshots, PDF statements, CSV exports \
-from banks, brokers and Swiss pension providers) and extract the account's current value.
+from banks, brokers and Swiss pension providers) and extract the current value of each account shown.
 
-- balance is the total value of the account on as_of: the account balance for a bank account, the total \
+- A document can show several accounts of one bank: a current account, savings pots or "Spaces", a credit \
+card, a depot, several 3a portfolios. Return one entry in accounts per account, each with its own balance. \
+Do not add an extra entry for a grand total that only sums the listed accounts.
+- balance is the value of the account on as_of: the account balance for a bank account, the total \
 portfolio or pension value for a depot, pillar 3a or pillar 2 account. For pillar 2 statements \
-(Vorsorgeausweis) use the current retirement savings (Altersguthaben / avoir de vieillesse), not projections.
+(Vorsorgeausweis) use the current retirement savings (Altersguthaben / avoir de vieillesse), not projections. \
+An outstanding credit card amount is a negative balance.
 - For a CSV of transactions, use a stated closing balance (e.g. "Kontostand") if there is one; never \
 compute a balance by summing transactions, leave balance null and say so in notes instead.
 - Swiss and German documents write numbers like 1'234.50 or 1.234,50 - return plain numbers.
 - Only report what the document shows. Use null where something is not visible.
-- Pick account_id from the user's accounts only when institution and type clearly match."""
+- Set account_id from the user's accounts only when it is clearly the same account (same institution, \
+type and name or currency); give each account_id to at most one entry. Otherwise leave it null."""
 
 
 def content_blocks(path: Path, media_type: str) -> list[dict]:
@@ -78,7 +90,10 @@ def extract(path: Path, media_type: str, accounts: list[dict], client: anthropic
           "currency": a["currency"]} for a in accounts],
         ensure_ascii=False,
     )
-    client = client or anthropic.Anthropic()
+    if client is None:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise ExtractError("Claude API key missing or invalid: set ANTHROPIC_API_KEY in .env")
+        client = anthropic.Anthropic()
     try:
         response = client.messages.parse(
             model=config.claude_model(),
@@ -87,7 +102,7 @@ def extract(path: Path, media_type: str, accounts: list[dict], client: anthropic
             messages=[{
                 "role": "user",
                 "content": content_blocks(path, media_type) + [
-                    {"type": "text", "text": f"The user's accounts: {account_list}\n\nExtract the account value from this file."},
+                    {"type": "text", "text": f"The user's accounts: {account_list}\n\nExtract the value of each account in this file."},
                 ],
             }],
             output_format=Extraction,
@@ -103,6 +118,9 @@ def extract(path: Path, media_type: str, accounts: list[dict], client: anthropic
     if response.parsed_output is None:
         raise ExtractError(f"No result (stop reason {response.stop_reason})")
     result = response.parsed_output
-    if result.account_id is not None and result.account_id not in {a["id"] for a in accounts}:
-        result.account_id = None
+    known, used = {a["id"] for a in accounts}, set()
+    for found in result.accounts:
+        if found.account_id not in known or found.account_id in used:
+            found.account_id = None
+        used.add(found.account_id)
     return result

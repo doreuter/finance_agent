@@ -2,9 +2,9 @@
 
 const KIND_LABELS = { cash: "Cash", depot: "Investments", pillar3a: "Pillar 3a", pillar2: "Pillar 2" };
 const DEFAULT_ACCOUNTS = [
-  { name: "Neon", institution: "Neon", kind: "cash", currency: "CHF", valuation: "balance" },
+  { name: "Main account", institution: "Neon", kind: "cash", currency: "CHF", valuation: "balance" },
   { name: "Neon Invest", institution: "Neon", kind: "depot", currency: "CHF", valuation: "holdings" },
-  { name: "DKB", institution: "DKB", kind: "cash", currency: "EUR", valuation: "balance" },
+  { name: "Girokonto", institution: "DKB", kind: "cash", currency: "EUR", valuation: "balance" },
   { name: "VIAC 3a", institution: "VIAC", kind: "pillar3a", currency: "CHF", valuation: "balance" },
   { name: "AXA BVG", institution: "AXA", kind: "pillar2", currency: "CHF", valuation: "balance" },
 ];
@@ -25,6 +25,20 @@ function money(value, currency, digits = 0) {
 function shortDate(iso) {
   if (!iso) return "";
   return new Date(iso + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function groupByBank(accounts) {
+  const groups = new Map();
+  for (const a of accounts) {
+    if (!groups.has(a.institution)) groups.set(a.institution, []);
+    groups.get(a.institution).push(a);
+  }
+  return [...groups.entries()];
+}
+
+function setBankOptions() {
+  $("#bank-options").innerHTML = [...new Set(state.accounts.map((a) => a.institution))]
+    .map((b) => `<option value="${esc(b)}">`).join("");
 }
 
 function toast(message) {
@@ -190,16 +204,20 @@ function renderAccountsTable(summary) {
     box.innerHTML = `<div class="empty">No accounts yet. <button class="link" onclick="showTab('accounts')">Set them up</button></div>`;
     return;
   }
-  box.innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Account</th><th class="hide-sm">Type</th><th class="num">Value</th><th class="num">${esc(summary.base_currency)}</th><th class="num hide-sm">As of</th></tr></thead>
-    <tbody>${summary.accounts.map((a) => `<tr>
-      <td><span class="kind-dot" style="background:var(--kind-${a.kind})"></span>${esc(a.name)}
-        <div class="muted small">${esc(a.institution)}</div>${accountWarnings(a)}</td>
+  const row = (a) => `<tr>
+      <td class="indent"><span class="kind-dot" style="background:var(--kind-${a.kind})"></span>${esc(a.name)}${accountWarnings(a)}</td>
       <td class="hide-sm">${esc(KIND_LABELS[a.kind])}</td>
       <td class="num">${esc(money(a.value, a.currency))}</td>
       <td class="num">${esc(money(a.value_base, null))}</td>
-      <td class="num hide-sm muted">${esc(shortDate(a.as_of))}</td></tr>`).join("")}
-    </tbody></table></div>`;
+      <td class="num hide-sm muted">${esc(shortDate(a.as_of))}</td></tr>`;
+  box.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Account</th><th class="hide-sm">Type</th><th class="num">Value</th><th class="num">${esc(summary.base_currency)}</th><th class="num hide-sm">As of</th></tr></thead>
+    ${groupByBank(summary.accounts).map(([bank, list]) => {
+      const subtotal = list.reduce((sum, a) => sum + (a.value_base ?? 0), 0);
+      return `<tbody><tr class="bank-row"><th colspan="3">${esc(bank)}</th><th class="num">${esc(money(subtotal, null))}</th><th class="hide-sm"></th></tr>
+        ${list.map(row).join("")}</tbody>`;
+    }).join("")}
+    </table></div>`;
 }
 
 $("#refresh").addEventListener("click", async (e) => {
@@ -234,19 +252,27 @@ document.addEventListener("pointermove", (e) => {
 async function loadAccounts() {
   state.accounts = await api("/api/accounts");
   $("#setup").hidden = state.accounts.length > 0;
-  $("#account-list").innerHTML = state.accounts.map((a) => `
-    <li><button data-id="${a.id}" class="${a.id === state.selected ? "active" : ""}">
+  setBankOptions();
+  $("#account-list").innerHTML = groupByBank(state.accounts).map(([bank, list]) => `
+    <li class="bank-head"><span>${esc(bank)}</span><button class="link small" data-add-to="${esc(bank)}">+ Account</button></li>
+    ${list.map((a) => `<li><button data-id="${a.id}" class="${a.id === state.selected ? "active" : ""}">
       <span class="kind-dot" style="background:var(--kind-${a.kind})"></span>${esc(a.name)}
-      <span class="sub">${esc(a.currency)}</span></button></li>`).join("");
-  document.querySelectorAll("#account-list button").forEach((b) =>
+      <span class="sub">${esc(a.currency)}</span></button></li>`).join("")}`).join("");
+  document.querySelectorAll("#account-list [data-id]").forEach((b) =>
     b.addEventListener("click", () => selectAccount(Number(b.dataset.id))));
+  document.querySelectorAll("#account-list [data-add-to]").forEach((b) => b.addEventListener("click", () => {
+    const form = $("#account-form");
+    form.closest("details").open = true;
+    form.institution.value = b.dataset.addTo;
+    form.name.focus();
+  }));
   if (state.selected && state.accounts.some((a) => a.id === state.selected)) renderAccountDetail();
   else $("#account-detail").innerHTML = `<p class="muted">Pick an account.</p>`;
 }
 
 function selectAccount(id) {
   state.selected = id;
-  document.querySelectorAll("#account-list button").forEach((b) => b.classList.toggle("active", Number(b.dataset.id) === id));
+  document.querySelectorAll("#account-list [data-id]").forEach((b) => b.classList.toggle("active", Number(b.dataset.id) === id));
   renderAccountDetail();
 }
 
@@ -259,7 +285,7 @@ async function renderAccountDetail() {
       <span class="muted small">${esc(a.institution)} · ${esc(KIND_LABELS[a.kind])} · ${esc(a.currency)}</span></div>
     <form id="edit-account" class="form-grid">
       <label>Name <input name="name" value="${esc(a.name)}" required></label>
-      <label>Institution <input name="institution" value="${esc(a.institution)}" required></label>
+      <label>Bank <input name="institution" value="${esc(a.institution)}" list="bank-options" required></label>
       <label>Currency <input name="currency" value="${esc(a.currency)}" pattern="[A-Z]{3}" maxlength="3" required></label>
       <label>Value from
         <select name="valuation">
@@ -431,7 +457,8 @@ dropzone.addEventListener("dragleave", () => dropzone.classList.remove("over"));
 dropzone.addEventListener("drop", (e) => { e.preventDefault(); dropzone.classList.remove("over"); uploadFiles([...e.dataTransfer.files]); });
 
 async function loadUploads() {
-  if (!state.accounts.length) state.accounts = await api("/api/accounts");
+  state.accounts = await api("/api/accounts");
+  setBankOptions();
   const uploads = await updateInboxBadge();
   state.uploads = uploads;
   const box = $("#uploads");
@@ -441,6 +468,36 @@ async function loadUploads() {
   if (uploads.some((u) => u.status === "reading") && !$("#tab-inbox").hidden) state.pollTimer = setTimeout(loadUploads, 2500);
 }
 
+function accountOptions(selectedId) {
+  return groupByBank(state.accounts).map(([bank, list]) => `<optgroup label="${esc(bank)}">${list.map((a) =>
+    `<option value="${a.id}" ${a.id === selectedId ? "selected" : ""}>${esc(a.name)} (${esc(a.currency)})</option>`).join("")}</optgroup>`).join("");
+}
+
+function foundBlock(f, i, bank) {
+  const positions = f.positions || [];
+  // Unmatched accounts default to "new" when the bank has no account yet that could be meant.
+  const target = f.account_id ?? "new";
+  return `<div class="found" data-found="${i}">
+    <label class="check found-head"><input type="checkbox" name="include" checked>
+      <strong>${esc(f.name || "Account")}</strong>
+      <span class="muted small">${esc(KIND_LABELS[f.kind] || "")}</span></label>
+    <div class="row">
+      <label>Book to <select name="target">
+        <option value="new" ${target === "new" ? "selected" : ""}>+ New account at ${esc(bank || "this bank")}</option>
+        ${accountOptions(f.account_id)}</select></label>
+      <label data-new-only>Name of new account <input name="new_name" value="${esc(f.name)}" maxlength="80"></label>
+      <label>Balance${f.currency ? ` (${esc(f.currency)})` : ""} <input type="number" step="0.01" name="balance" value="${f.balance ?? ""}"></label>
+    </div>
+    ${positions.length ? `<details class="small"><summary>${positions.length} position${positions.length > 1 ? "s" : ""} found</summary>
+      <div class="table-wrap"><table>
+      <thead><tr><th>Name</th><th>ISIN / ticker</th><th class="num">Quantity</th><th class="num">Value</th></tr></thead>
+      <tbody>${positions.map((p) => `<tr><td>${esc(p.name)}</td><td class="small">${esc(p.isin || "")} ${esc(p.symbol || "")}</td>
+        <td class="num">${p.quantity ?? "–"}</td><td class="num">${esc(money(p.value, p.currency, 2))}</td></tr>`).join("")}</tbody></table></div></details>
+      <label class="check" data-holdings-only><input type="checkbox" name="replace_holdings">
+        Replace this account's positions with these (tickers are looked up by ISIN)</label>` : ""}
+  </div>`;
+}
+
 function uploadCard(u) {
   const head = `<div class="upload-head"><h2>${esc(u.filename)}</h2>
     <a class="small" href="/api/uploads/${u.id}/file" target="_blank" rel="noopener">View file</a></div>`;
@@ -448,38 +505,41 @@ function uploadCard(u) {
   if (u.status === "failed") return `<div class="card" data-upload="${u.id}">${head}<p class="error">${esc(u.error)}</p>
     <div class="actions"><button class="ghost" data-act="retry">Try again</button><button class="link" data-act="dismiss">Dismiss</button></div></div>`;
   const x = u.extracted || {};
-  const options = state.accounts.map((a) =>
-    `<option value="${a.id}" ${a.id === x.account_id ? "selected" : ""}>${esc(a.name)} (${esc(a.currency)})</option>`).join("");
-  const positions = x.positions || [];
+  const found = x.accounts || [];
   return `<div class="card" data-upload="${u.id}">${head}
     ${x.notes ? `<div class="notes">${esc(x.notes)}</div>` : ""}
     <div class="row">
-      <label>Account <select name="account_id"><option value="">Choose…</option>${options}</select></label>
+      <label>Bank <input name="institution" value="${esc(x.institution || "")}" list="bank-options" maxlength="80"></label>
       <label>Date <input type="date" name="as_of" value="${esc(x.as_of || new Date().toISOString().slice(0, 10))}"></label>
-      <label>Balance${x.currency ? ` (${esc(x.currency)})` : ""} <input type="number" step="0.01" name="balance" value="${x.balance ?? ""}"></label>
     </div>
-    ${positions.length ? `<h2 style="margin-top:16px">Positions found</h2><div class="table-wrap"><table>
-      <thead><tr><th>Name</th><th>ISIN / ticker</th><th class="num">Quantity</th><th class="num">Value</th></tr></thead>
-      <tbody>${positions.map((p) => `<tr><td>${esc(p.name)}</td><td class="small">${esc(p.isin || "")} ${esc(p.symbol || "")}</td>
-        <td class="num">${p.quantity ?? "–"}</td><td class="num">${esc(money(p.value, p.currency, 2))}</td></tr>`).join("")}</tbody></table></div>
-      <label class="check" style="margin-top:10px" data-holdings-only><input type="checkbox" name="replace_holdings">
-        Replace this account's positions with these (tickers are looked up by ISIN)</label>` : ""}
-    <div class="actions"><button class="primary" data-act="apply">Save to account</button><button class="link" data-act="dismiss">Dismiss</button></div>
+    ${found.length ? found.map((f, i) => foundBlock(f, i, x.institution)).join("") : `<p class="muted">No account values found in this file.</p>`}
+    <div class="actions">${found.length ? `<button class="primary" data-act="apply">Save ${found.length > 1 ? "selected" : "to account"}</button>` : ""}
+      <button class="link" data-act="dismiss">Dismiss</button></div>
   </div>`;
 }
 
 function wireUpload(u) {
   const card = document.querySelector(`[data-upload="${u.id}"]`);
   if (!card) return;
-  const select = $("[name=account_id]", card), replace = $("[data-holdings-only]", card);
-  const syncReplace = () => {
-    if (!replace) return;
-    const account = state.accounts.find((a) => a.id === Number(select.value));
-    replace.hidden = account?.valuation !== "holdings";
-    if (replace.hidden) $("input", replace).checked = false;
-  };
-  select?.addEventListener("change", syncReplace);
-  syncReplace();
+  const found = u.extracted?.accounts || [];
+  card.querySelectorAll("[data-found]").forEach((block) => {
+    const select = $("[name=target]", block), replace = $("[data-holdings-only]", block), newOnly = $("[data-new-only]", block);
+    const include = $("[name=include]", block);
+    const sync = () => {
+      const isNew = select.value === "new";
+      newOnly.hidden = !isNew;
+      if (replace) {
+        // A new account gets its positions anyway; for an existing one only if it is valued by positions.
+        const account = state.accounts.find((a) => a.id === Number(select.value));
+        replace.hidden = isNew || account?.valuation !== "holdings";
+        if (replace.hidden) $("input", replace).checked = false;
+      }
+      block.classList.toggle("off", !include.checked);
+    };
+    select.addEventListener("change", sync);
+    include.addEventListener("change", sync);
+    sync();
+  });
   card.addEventListener("click", async (e) => {
     const act = e.target.dataset.act;
     if (!act) return;
@@ -488,14 +548,30 @@ function wireUpload(u) {
       if (act === "dismiss") await api(`/api/uploads/${u.id}/dismiss`, { method: "POST" });
       if (act === "retry") await api(`/api/uploads/${u.id}/retry`, { method: "POST" });
       if (act === "apply") {
-        const accountId = Number($("[name=account_id]", card).value);
-        if (!accountId) { toast("Choose an account first"); e.target.disabled = false; return; }
-        const bal = $("[name=balance]", card).value;
-        const replace = $("[name=replace_holdings]", card)?.checked || false;
-        const r = await api(`/api/uploads/${u.id}/apply`, { method: "POST", body: {
-          account_id: accountId, as_of: $("[name=as_of]", card).value, balance: bal === "" ? null : Number(bal),
-          replace_holdings: replace, positions: replace ? u.extracted.positions : [] } });
-        toast(["Saved", ...r.notes, ...r.errors].join(". "));
+        const bank = $("[name=institution]", card).value.trim();
+        const items = [];
+        for (const block of card.querySelectorAll("[data-found]")) {
+          if (!$("[name=include]", block).checked) continue;
+          const f = found[Number(block.dataset.found)];
+          const bal = $("[name=balance]", block).value;
+          const item = { balance: bal === "" ? null : Number(bal), positions: f.positions || [], replace_holdings: false };
+          if ($("[name=target]", block).value === "new") {
+            if (!bank) throw new Error("Enter the bank for the new account");
+            const hasQuantities = item.positions.some((p) => p.quantity);
+            item.new_account = { name: $("[name=new_name]", block).value.trim() || f.name || bank, institution: bank,
+              kind: f.kind || "cash", currency: (f.currency || "CHF").toUpperCase(), valuation: hasQuantities ? "holdings" : "balance" };
+            item.replace_holdings = hasQuantities;
+          } else {
+            item.account_id = Number($("[name=target]", block).value);
+            item.replace_holdings = $("[name=replace_holdings]", block)?.checked || false;
+          }
+          if (!item.replace_holdings) item.positions = [];
+          items.push(item);
+        }
+        if (!items.length) throw new Error("Select at least one account");
+        const r = await api(`/api/uploads/${u.id}/apply`, { method: "POST", body: { as_of: $("[name=as_of]", card).value, items } });
+        toast([`Saved ${items.length} account${items.length > 1 ? "s" : ""}`, ...r.notes, ...r.errors].join(". "));
+        state.accounts = await api("/api/accounts");
       }
       loadUploads();
     } catch (err) {

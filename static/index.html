@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FinanceAgent</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
   <header class="top">
@@ -56,8 +56,8 @@
     <section id="tab-accounts" class="tab" hidden>
       <div id="setup" class="card" hidden>
         <h2>Get started</h2>
-        <p>Create your five accounts in one go: Neon (cash), Neon Invest (depot), DKB (EUR), VIAC (pillar 3a)
-          and AXA (pillar 2). You can rename or change them afterwards.</p>
+        <p>Create your five accounts in one go: Neon main account and Neon Invest, DKB Girokonto (EUR), VIAC (pillar 3a)
+          and AXA (pillar 2). Further accounts (Spaces, Tagesgeld, credit card) can be added per bank, or straight from an uploaded overview.</p>
         <button id="setup-defaults" class="primary">Create my accounts</button>
       </div>
       <div class="accounts-layout">
@@ -68,7 +68,7 @@
             <summary>Add an account</summary>
             <form id="account-form" class="form-grid">
               <label>Name <input name="name" required maxlength="80"></label>
-              <label>Institution <input name="institution" required maxlength="80"></label>
+              <label>Bank <input name="institution" required maxlength="80" list="bank-options"></label>
               <label>Type
                 <select name="kind">
                   <option value="cash">Cash</option><option value="depot">Investments</option>
@@ -102,8 +102,9 @@
     </section>
   </main>
 
+  <datalist id="bank-options"></datalist>
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

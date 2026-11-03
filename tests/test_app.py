@@ -94,8 +94,8 @@ def test_upload_extract_and_apply(client, monkeypatch):
     def fake_extract(path, media_type, accounts):
         seen["media_type"] = media_type
         seen["accounts"] = [a["name"] for a in accounts]
-        return extract.Extraction(account_id=viac["id"], institution="VIAC", as_of=TODAY,
-                                  balance=23456.7, currency="CHF", notes="VIAC portfolio overview")
+        return extract.Extraction(institution="VIAC", as_of=TODAY, notes="VIAC portfolio overview", accounts=[
+            extract.FoundAccount(account_id=viac["id"], name="Portfolio 1", kind="pillar3a", balance=23456.7, currency="CHF")])
 
     monkeypatch.setattr(extract, "extract", fake_extract)
     r = client.post("/api/upload", files={"file": ("IMG_0001.PNG", b"\x89PNG fake", "image/png")})
@@ -105,13 +105,44 @@ def test_upload_extract_and_apply(client, monkeypatch):
 
     pending = client.get("/api/uploads").json()
     assert pending[0]["status"] == "pending"
-    assert pending[0]["extracted"]["balance"] == 23456.7
+    assert pending[0]["extracted"]["accounts"][0]["balance"] == 23456.7
 
-    r = client.post(f"/api/uploads/{upload_id}/apply", json={"account_id": viac["id"], "as_of": TODAY, "balance": 23456.7})
+    r = client.post(f"/api/uploads/{upload_id}/apply", json={
+        "as_of": TODAY, "items": [{"account_id": viac["id"], "balance": 23456.7}]})
     assert r.status_code == 200
     assert client.get("/api/uploads").json() == []
     assert client.get("/api/summary").json()["total"] == pytest.approx(23456.7)
     assert client.get(f"/api/uploads/{upload_id}/file").content == b"\x89PNG fake"
+
+
+def test_bank_overview_books_several_accounts_and_creates_new_ones(client):
+    main = make_account(client, name="Main account", institution="Neon")
+    client.post("/api/upload", files={"file": ("neon.png", b"\x89PNG", "image/png")})
+    upload_id = client.get("/api/uploads").json()[0]["id"]
+    r = client.post(f"/api/uploads/{upload_id}/apply", json={"as_of": TODAY, "items": [
+        {"account_id": main["id"], "balance": 1200},
+        {"new_account": {"name": "Space Ferien", "institution": "Neon", "kind": "cash", "currency": "CHF"}, "balance": 800},
+    ]})
+    assert r.status_code == 200, r.text
+    s = client.get("/api/summary").json()
+    assert s["total"] == pytest.approx(2000)
+    assert [(a["institution"], a["name"]) for a in s["accounts"]] == [("Neon", "Main account"), ("Neon", "Space Ferien")]
+
+
+def test_apply_item_needs_exactly_one_target(client):
+    client.post("/api/upload", files={"file": ("x.png", b"\x89PNG", "image/png")})
+    upload_id = client.get("/api/uploads").json()[0]["id"]
+    r = client.post(f"/api/uploads/{upload_id}/apply", json={"as_of": TODAY, "items": [{"balance": 5}]})
+    assert r.status_code == 422
+
+
+def test_old_single_account_extraction_still_shows(client):
+    from app import db
+    with db.connect() as conn:
+        conn.execute("INSERT INTO uploads (filename, media_type, path, status, extracted_json) VALUES (?, ?, ?, 'pending', ?)",
+                     ("old.png", "image/png", "/nonexistent", '{"account_id": null, "institution": "DKB", "balance": 5.0, "currency": "EUR"}'))
+    found = client.get("/api/uploads").json()[0]["extracted"]["accounts"]
+    assert found[0]["balance"] == 5.0 and found[0]["name"] == "DKB"
 
 
 def test_apply_positions_looks_up_tickers_by_isin(client, monkeypatch):
@@ -119,12 +150,12 @@ def test_apply_positions_looks_up_tickers_by_isin(client, monkeypatch):
     monkeypatch.setattr(prices, "search", lambda q: [{"symbol": "VWRL.SW"}] if q == "IE00B3RBWM25" else [])
     client.post("/api/upload", files={"file": ("x.csv", b"a;b", "text/csv")})
     upload_id = client.get("/api/uploads").json()[0]["id"]
-    r = client.post(f"/api/uploads/{upload_id}/apply", json={
-        "account_id": depot["id"], "as_of": TODAY, "replace_holdings": True,
+    r = client.post(f"/api/uploads/{upload_id}/apply", json={"as_of": TODAY, "items": [{
+        "account_id": depot["id"], "replace_holdings": True,
         "positions": [
             {"name": "Vanguard FTSE All-World", "isin": "IE00B3RBWM25", "quantity": 12},
             {"name": "Unknown fund", "isin": "XX0000000000", "quantity": 3, "value": 300, "currency": "CHF"},
-        ]})
+        ]}]})
     assert r.status_code == 200
     assert any("Unknown fund" in n for n in r.json()["notes"])
     holdings = client.get(f"/api/accounts/{depot['id']}/holdings").json()

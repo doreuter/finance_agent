@@ -128,6 +128,9 @@ th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--bord
 th { font-size: 12px; font-weight: 600; color: var(--muted); }
 td.num, th.num { text-align: right; white-space: nowrap; }
 .table-wrap { overflow-x: auto; }
+.bank-row th { color: var(--text); font-size: 13px; padding-top: 14px; background: none; }
+.bank-row th.num { color: var(--text-2); font-weight: 600; }
+td.indent { padding-left: 14px; }
 .kind-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .warn { display: inline-block; background: var(--warn-bg); color: var(--warn-ink); border-radius: 6px; padding: 1px 6px; font-size: 12px; margin-top: 2px; }
 
@@ -140,6 +143,12 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 }
 .account-list button.active { background: var(--bg); font-weight: 600; }
 .account-list .sub { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 400; }
+.account-list .bank-head {
+  display: flex; justify-content: space-between; align-items: baseline; padding: 12px 8px 2px;
+  font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em;
+}
+.account-list .bank-head:first-child { padding-top: 0; }
+.account-list .bank-head .link { width: auto; padding: 0; color: var(--accent); text-transform: none; letter-spacing: 0; font-weight: 400; }
 .add-account { margin-top: 12px; }
 .add-account summary { cursor: pointer; color: var(--accent); }
 .holdings-editor input { min-width: 80px; }
@@ -157,6 +166,12 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 .actions { display: flex; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .check { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--text); }
 .check input { width: auto; }
+.found { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+.found .row { margin-top: 8px; }
+.found details { margin-top: 10px; }
+.found .check[data-holdings-only] { margin-top: 8px; }
+.found.off > :not(.found-head) { display: none; }
+.found.off .found-head strong { color: var(--muted); }
 
 .toast {
   position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 30;

@@ -87,7 +87,7 @@ def account_value(conn, account: dict, day: str | None = None) -> dict:
 def summary() -> dict:
     base = config.base_currency()
     with db.connect() as conn:
-        accounts = db.rows(conn, "SELECT * FROM accounts WHERE archived = 0 ORDER BY kind, name")
+        accounts = db.rows(conn, "SELECT * FROM accounts WHERE archived = 0 ORDER BY institution, kind, name")
         out = []
         for a in accounts:
             out.append({**a, **account_value(conn, a)})
