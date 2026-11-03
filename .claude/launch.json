@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "finance-agent",
+      "runtimeExecutable": ".venv/bin/uvicorn",
+      "runtimeArgs": ["app.main:app", "--host", "127.0.0.1", "--port", "8765"],
+      "port": 8765
+    },
+    {
+      "name": "finance-agent-demo",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["FINANCE_DB=data/demo/finance.db", ".venv/bin/uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8766"],
+      "port": 8766
+    }
+  ]
+}

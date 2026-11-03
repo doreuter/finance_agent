@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FinanceAgent</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>FinanceAgent</h1>
+    <nav>
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="accounts">Accounts</button>
+      <button data-tab="inbox">Inbox <span id="inbox-count" class="badge" hidden></span></button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="login" hidden>
+      <form id="login-form" class="card narrow">
+        <h2>Log in</h2>
+        <label>Access token <input type="password" name="token" autocomplete="current-password" required></label>
+        <button class="primary">Log in</button>
+        <p class="error" id="login-error"></p>
+      </form>
+    </section>
+
+    <section id="tab-overview" class="tab">
+      <div class="hero card">
+        <div>
+          <div class="muted">Net worth</div>
+          <div id="total" class="hero-number">–</div>
+          <div id="total-sub" class="muted small"></div>
+        </div>
+        <button id="refresh" class="ghost">Refresh prices</button>
+      </div>
+
+      <div class="card">
+        <h2>Split</h2>
+        <div id="split-bar" class="split-bar" role="img"></div>
+        <ul id="split-legend" class="legend"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Net worth over time</h2>
+        <div id="history" class="chart"></div>
+      </div>
+
+      <div class="card">
+        <h2>Accounts</h2>
+        <div id="accounts-table"></div>
+      </div>
+    </section>
+
+    <section id="tab-accounts" class="tab" hidden>
+      <div id="setup" class="card" hidden>
+        <h2>Get started</h2>
+        <p>Create your five accounts in one go: Neon (cash), Neon Invest (depot), DKB (EUR), VIAC (pillar 3a)
+          and AXA (pillar 2). You can rename or change them afterwards.</p>
+        <button id="setup-defaults" class="primary">Create my accounts</button>
+      </div>
+      <div class="accounts-layout">
+        <div class="card">
+          <h2>Your accounts</h2>
+          <ul id="account-list" class="account-list"></ul>
+          <details class="add-account">
+            <summary>Add an account</summary>
+            <form id="account-form" class="form-grid">
+              <label>Name <input name="name" required maxlength="80"></label>
+              <label>Institution <input name="institution" required maxlength="80"></label>
+              <label>Type
+                <select name="kind">
+                  <option value="cash">Cash</option><option value="depot">Investments</option>
+                  <option value="pillar3a">Pillar 3a</option><option value="pillar2">Pillar 2</option>
+                </select>
+              </label>
+              <label>Currency <input name="currency" value="CHF" pattern="[A-Z]{3}" maxlength="3" required></label>
+              <label>Value from
+                <select name="valuation">
+                  <option value="balance">Balance I enter or import</option>
+                  <option value="holdings">Positions × market prices</option>
+                </select>
+              </label>
+              <button class="primary">Add</button>
+            </form>
+          </details>
+        </div>
+        <div id="account-detail" class="card"><p class="muted">Pick an account.</p></div>
+      </div>
+    </section>
+
+    <section id="tab-inbox" class="tab" hidden>
+      <div class="card">
+        <h2>Add a statement, CSV or screenshot</h2>
+        <label id="dropzone" class="dropzone">
+          <input id="file-input" type="file" multiple accept=".csv,.txt,.pdf,image/png,image/jpeg,image/webp">
+          <span>Drop files here or <u>choose files</u><br><span class="muted small">PNG/JPEG screenshots, PDF statements, CSV exports</span></span>
+        </label>
+      </div>
+      <div id="uploads"></div>
+    </section>
+  </main>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
