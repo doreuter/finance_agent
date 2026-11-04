@@ -38,7 +38,9 @@ def plain(text: str) -> dict:
 
 def build(url: str, token: str) -> dict:
     address, key, response = (str(uuid.uuid4()).upper() for _ in range(3))
-    shortcut_input = {"Value": {"Type": "ExtensionInput"}, "WFSerializationType": "WFTokenAttachmentParameterState"}
+    # a File form field holds the attachment wrapped twice; the flat form signs fine but sends no file
+    shortcut_input = {"Value": {"Value": {"Type": "ExtensionInput"}, "WFSerializationType": "WFTextTokenAttachment"},
+                      "WFSerializationType": "WFTokenAttachmentParameterState"}
     actions = [
         {"WFWorkflowActionIdentifier": "is.workflow.actions.gettext",
          "WFWorkflowActionParameters": {"UUID": address, "CustomOutputName": "Upload address", "WFTextActionText": url}},
