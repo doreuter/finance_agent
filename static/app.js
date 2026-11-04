@@ -538,6 +538,8 @@ async function renderAccountDetail() {
     <form id="edit-account" class="form-grid">
       <label>Name <input name="name" value="${esc(a.name)}" required></label>
       <label>Bank <input name="institution" value="${esc(a.institution)}" list="bank-options" required></label>
+      <label>Type <select name="kind">${Object.entries(KIND_LABELS).map(([k, l]) =>
+        `<option value="${k}" ${a.kind === k ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
       <label>Currency <input name="currency" value="${esc(a.currency)}" pattern="[A-Z]{3}" maxlength="3" required></label>
       <label>Belongs to <select name="owner_id">${ownerOptions(a.owner_id)}</select></label>
       <label>Bank's country <input name="country" value="${esc(a.country || "CH")}" pattern="[A-Za-z]{2}" maxlength="2"
@@ -556,8 +558,9 @@ async function renderAccountDetail() {
     const f = e.target;
     await api(`/api/accounts/${a.id}`, { method: "PATCH", body: {
       name: f.name.value, institution: f.institution.value, currency: f.currency.value.toUpperCase(), valuation: f.valuation.value,
-      owner_id: ownerValue(f.owner_id.value), country: f.country.value.toUpperCase() } });
+      owner_id: ownerValue(f.owner_id.value), country: f.country.value.toUpperCase(), kind: f.kind.value } });
     toast("Saved");
+    updateTasksBadge();  // a pillar 2/3a account brings its own reminders
     loadAccounts();
   });
   $("#archive").addEventListener("click", async () => {
@@ -1217,8 +1220,14 @@ async function loadTaxEstimate() {
 }
 
 async function loadPension() {
-  const people = await api("/api/pension");
+  const [people, accounts] = await Promise.all([api("/api/pension"), api("/api/accounts")]);
   const rows = people.filter((p) => p.has_3a || p.has_pillar2);
+  // pension money always belongs to one person; a joint or mistyped account would silently be left out
+  const joint = accounts.filter((a) => (a.kind === "pillar3a" || a.kind === "pillar2") && a.owner_id == null);
+  const hints = joint.map((a) => `<div class="warn">${esc(a.institution)} · ${esc(a.name)} is marked Joint. Pension accounts belong to one
+    person: set <em>Belongs to</em> under Accounts so it counts here.</div>`).join("")
+    + (!rows.length && !joint.length ? `<p class="muted small">If your 3a or pension fund account shows as Cash, open it under Accounts and set
+      <em>Type</em> to Pillar 3a or Pillar 2.</p>` : "");
   $("#pension").innerHTML = rows.length ? rows.map((p) => {
     const pct3a = p.max_3a ? Math.min(p.paid_3a / p.max_3a, 1) : null;
     return `<div class="pension-row">
@@ -1233,7 +1242,7 @@ async function loadPension() {
         <div class="small">${p.pillar2_buyin != null ? `<strong>${esc(money(p.pillar2_buyin, "CHF"))}</strong>${p.pillar2_buyin_as_of ? ` <span class="muted">as of ${esc(shortDate(p.pillar2_buyin_as_of))}</span>` : ""}`
           : `<span class="muted">unknown, upload the pension certificate</span>`}</div></div>` : ""}
     </div>`;
-  }).join("") : `<div class="empty">No pillar 2 or 3a accounts yet.</div>`;
+  }).join("") + hints : `<div class="empty">No pillar 2 or 3a accounts yet.</div>${hints}`;
 }
 
 let briefingPoll;

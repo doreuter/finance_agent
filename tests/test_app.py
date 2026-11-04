@@ -886,3 +886,13 @@ def test_chat_answers_with_family_data_and_is_limited(client, monkeypatch):
     assert client.post("/api/chat", json={"messages": [{"role": "user", "content": "again"}]}).status_code == 429
     client.post("/api/logout")
     assert client.post("/api/chat", json={"messages": [{"role": "user", "content": "x"}]}).status_code == 401
+
+
+def test_account_type_can_be_changed_to_a_pension_account(client):
+    uid = client.user["id"]
+    viac = make_account(client, name="VIAC", institution="VIAC", owner_id=uid)  # created as cash by mistake
+    assert client.get("/api/pension").json()[0]["has_3a"] is False
+    r = client.patch(f"/api/accounts/{viac['id']}", json={"kind": "pillar3a"})
+    assert r.status_code == 200 and r.json()["kind"] == "pillar3a"
+    assert client.get("/api/pension").json()[0]["has_3a"] is True
+    assert client.patch(f"/api/accounts/{viac['id']}", json={"kind": "savings"}).status_code == 422
