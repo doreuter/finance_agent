@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FinanceAgent</title>
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
   <header class="top">
@@ -168,9 +168,24 @@
     </section>
   </main>
 
+  <dialog id="quote-dialog" aria-labelledby="quote-title">
+    <div class="dialog-head">
+      <div><h2 id="quote-title"></h2><div id="quote-sub" class="muted small"></div></div>
+      <button class="link close" data-close aria-label="Close">✕</button>
+    </div>
+    <div class="quote-figures" id="quote-figures"></div>
+    <div class="chips" id="quote-ranges" role="group" aria-label="Period">
+      <button data-range="1mo">1M</button><button data-range="6mo">6M</button><button data-range="1y">1Y</button>
+      <button data-range="5y">5Y</button><button data-range="max">Max</button>
+    </div>
+    <div id="quote-chart" class="chart"></div>
+    <div class="tooltip" hidden></div>
+    <div id="quote-position" class="small"></div>
+    <div class="actions"><a id="quote-yahoo" class="ghost button-link" target="_blank" rel="noopener noreferrer">Open on Yahoo Finance ↗</a></div>
+  </dialog>
   <datalist id="bank-options"></datalist>
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

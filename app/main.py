@@ -9,6 +9,7 @@ import tempfile
 import json
 import logging
 import mimetypes
+import re
 import os
 import secrets
 import threading
@@ -22,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, config, db, extract, prices, valuation
+from . import auth, config, db, extract, match, prices, valuation
 
 config.load_dotenv()
 logger = logging.getLogger("financeagent")
@@ -415,10 +416,14 @@ def list_holdings(account_id: int):
 
 
 def _replace_holdings(conn, account_id: int, holdings: list[HoldingIn]) -> None:
+    conn.execute("DELETE FROM holdings WHERE account_id = ?", (account_id,))
+    _insert_holdings(conn, account_id, holdings)
+
+
+def _insert_holdings(conn, account_id: int, holdings: list[HoldingIn]) -> None:
     for h in holdings:
         if h.quantity is None and (h.symbol or h.manual_price is None):
             raise HTTPException(422, f"{h.name}: without a quantity, enter the position's value and no ticker")
-    conn.execute("DELETE FROM holdings WHERE account_id = ?", (account_id,))
     conn.executemany(
         "INSERT INTO holdings (account_id, name, symbol, isin, quantity, manual_price, currency, value_only) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -428,6 +433,21 @@ def _replace_holdings(conn, account_id: int, holdings: list[HoldingIn]) -> None:
     )
 
 
+def _merge_holdings(conn, account_id: int, holdings: list[HoldingIn]) -> None:
+    """Update positions that are already there (same ticker, ISIN or name) and add new ones; positions
+    the file doesn't show stay, since a screenshot often shows only part of the portfolio."""
+    norm = lambda name: re.sub(r"[^a-z0-9]", "", (name or "").lower())
+    keep = db.rows(conn, "SELECT * FROM holdings WHERE account_id = ?", account_id)
+    for h in holdings:
+        symbol = (h.symbol or "").strip().upper() or None
+        same = next((e for e in keep if (symbol and e["symbol"] == symbol) or (h.isin and e["isin"] == h.isin)
+                     or norm(e["name"]) == norm(h.name)), None)
+        if same:
+            keep.remove(same)
+            conn.execute("DELETE FROM holdings WHERE id = ?", (same["id"],))
+    _insert_holdings(conn, account_id, holdings)
+
+
 @app.put("/api/accounts/{account_id}/holdings")
 def replace_holdings(account_id: int, body: list[HoldingIn]):
     with db.connect() as conn:
@@ -435,6 +455,16 @@ def replace_holdings(account_id: int, body: list[HoldingIn]):
         _replace_holdings(conn, account_id, body)
     errors = valuation.refresh()
     return {"ok": True, "errors": errors}
+
+
+@app.get("/api/quote/{symbol}")
+def get_quote(symbol: str, range: Literal["1mo", "6mo", "1y", "5y", "max"] = "1y"):
+    if not re.fullmatch(r"[A-Za-z0-9.\-=^]{1,30}", symbol):
+        raise HTTPException(422, "invalid symbol")
+    try:
+        return prices.quote(symbol.upper(), range)
+    except prices.PriceError as e:
+        raise HTTPException(502, f"no market data: {e}")
 
 
 @app.get("/api/symbols")
@@ -455,7 +485,8 @@ def _run_extraction(upload_id: int) -> None:
         uploader = db.row(conn, "SELECT name FROM users WHERE id = ?", up["user_id"]) if up["user_id"] else None
     try:
         result = extract.extract(Path(up["path"]), up["media_type"], accounts, uploader["name"] if uploader else None)
-        status, payload, error = "pending", result.model_dump_json(), None
+        # quantities from value / price, tickers checked against market prices
+        status, payload, error = "pending", json.dumps(match.resolve_all(result.model_dump())), None
     except extract.ExtractError as e:
         status, payload, error = "failed", None, str(e)
     except Exception as e:  # unexpected: keep the upload so it can be retried
@@ -530,7 +561,7 @@ def upload_file(upload_id: int):
 
 
 class PositionIn(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=120)
     isin: Optional[str] = None
     symbol: Optional[str] = None
     quantity: Optional[float] = None
@@ -543,7 +574,8 @@ class ApplyItem(BaseModel):
     account_id: Optional[int] = None
     new_account: Optional[AccountIn] = None
     balance: Optional[float] = None
-    replace_holdings: bool = False
+    replace_holdings: bool = False  # update the account's positions with these
+    remove_missing: bool = False    # ...and delete positions the file doesn't list (a full statement)
     positions: list[PositionIn] = []
 
 
@@ -603,7 +635,10 @@ def apply_upload(upload_id: int, body: ApplyIn):
             else:
                 account_id = item.account_id
             if n in holdings_by_item:
-                _replace_holdings(conn, account_id, holdings_by_item[n])
+                if item.remove_missing or item.new_account:
+                    _replace_holdings(conn, account_id, holdings_by_item[n])
+                else:
+                    _merge_holdings(conn, account_id, holdings_by_item[n])
                 replaced = True
             if item.balance is not None:
                 _add_balance(conn, account_id, body.as_of.isoformat(), item.balance, "upload", f"upload #{upload_id}")

@@ -25,10 +25,17 @@ class ExtractError(Exception):
 class Position(BaseModel):
     name: str = Field(description="Security or fund name as shown")
     isin: Optional[str] = Field(None, description="ISIN if shown")
-    symbol: Optional[str] = Field(None, description="Ticker if shown; do not guess")
+    symbol: Optional[str] = Field(None, description="Ticker if shown")
     quantity: Optional[float] = Field(None, description="Number of units/shares if shown")
-    value: Optional[float] = Field(None, description="Market value of the position if shown")
-    currency: Optional[str] = Field(None, description="ISO currency of the value, e.g. CHF")
+    price: Optional[float] = Field(None, description="Current price of one unit/share if shown (not the buy price)")
+    value: Optional[float] = Field(None, description="Market value of the whole position if shown")
+    currency: Optional[str] = Field(None, description="ISO currency of price and value, e.g. EUR")
+    ticker_hints: list[str] = Field(default_factory=list, description="If the document shows no ticker/ISIN but you "
+                                    "recognise the security: up to 6 search hints, best first - likely Yahoo Finance "
+                                    "tickers (e.g. XDWT.DE, TSM), the ISIN, and the full plain name (e.g. 'Taiwan "
+                                    "Semiconductor', 'Amundi MSCI EM Asia'). If an abbreviated name could mean "
+                                    "several funds, give hints for each. They are checked against market prices "
+                                    "before use.")
 
 
 class FoundAccount(BaseModel):
@@ -59,12 +66,19 @@ portfolio or pension value for a depot, pillar 3a or pillar 2 account. For pilla
 An outstanding credit card amount is a negative balance.
 - For a CSV of transactions, use a stated closing balance (e.g. "Kontostand") if there is one; never \
 compute a balance by summing transactions, leave balance null and say so in notes instead.
+- For securities, read the position's market value and the current price per unit where shown. Banking \
+apps often show the price per share under the name and the position value on the right; the percentage \
+and amount since buy are gains, not prices. Gains are not needed.
+- For a depot, set balance only when the document states the portfolio total; never add up positions.
 - Swiss and German documents write numbers like 1'234.50 or 1.234,50 - return plain numbers.
 - Only report what the document shows. Use null where something is not visible.
 - Set account_id from the family's accounts only when it is clearly the same account (same institution, \
 type and name or currency); give each account_id to at most one entry. Otherwise leave it null. Several \
 family members can have accounts at the same bank: unless the document names the holder, prefer \
-accounts of the person who uploaded it, then joint accounts."""
+accounts of the person who uploaded it, then joint accounts.
+- A depot's currency is only its reference currency; its securities often trade in other currencies (EUR, \
+USD), so a different currency does not rule out a match. When the document doesn't name the bank, a \
+securities overview most likely belongs to the family's existing depot (of the uploader, if several)."""
 
 
 def content_blocks(path: Path, media_type: str) -> list[dict]:

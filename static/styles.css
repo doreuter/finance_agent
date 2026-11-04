@@ -210,3 +210,33 @@ code.token { display: block; margin-top: 6px; padding: 8px; word-break: break-al
   background: linear-gradient(to right, var(--kind-depot) var(--w), var(--grid) var(--w)); }
 td.up { color: var(--good); }
 td.down { color: var(--danger); }
+
+/* positions to review in the inbox */
+.positions-review { margin-top: 12px; }
+.review td { padding: 4px; vertical-align: middle; }
+.review input[type=checkbox] { width: auto; }
+.review input[name=pos_quantity] { width: 90px; text-align: right; }
+.review input[name=pos_symbol] { width: 96px; }
+.ticker-cell { white-space: nowrap; }
+.ticker-cell span { display: inline-block; width: 1.4em; text-align: center; }
+.ok { color: var(--good); font-weight: 700; }
+
+/* position pop-up */
+.position-link { text-align: left; color: var(--text); text-decoration: underline; text-decoration-color: var(--border);
+  text-underline-offset: 3px; }
+.position-link:hover { text-decoration-color: var(--accent); }
+dialog#quote-dialog {
+  width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 32px); border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface); color: var(--text); padding: 16px;
+}
+dialog#quote-dialog::backdrop { background: rgb(0 0 0 / .4); }
+.dialog-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.dialog-head h2 { color: var(--text); margin: 0 0 2px; font-size: 17px; }
+.close { font-size: 18px; color: var(--muted); }
+.quote-figures { display: flex; gap: 28px; margin: 14px 0 12px; flex-wrap: wrap; }
+.figure { font-size: 22px; font-weight: 650; white-space: nowrap; }
+.figure.small-figure { font-size: 15px; font-weight: 500; padding-top: 5px; }
+.figure.up { color: var(--good); }
+.figure.down { color: var(--danger); }
+#quote-position { margin-top: 10px; color: var(--text-2); }
+#tooltip { z-index: 1000; }

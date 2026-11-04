@@ -280,6 +280,7 @@ function pct(x, digits = 1) {
 }
 
 function renderPortfolio(p) {
+  state.portfolio = p;
   const card = $("#holdings-card");
   card.hidden = !p.positions.length;
   if (!p.positions.length) return;
@@ -291,7 +292,7 @@ function renderPortfolio(p) {
     <thead><tr><th>Position</th><th class="num hide-sm">Quantity</th><th class="num hide-sm">Price</th>
       <th class="num">${esc(cur)}</th><th class="num">Share</th><th class="num">Today</th></tr></thead>
     <tbody>${p.positions.map((x) => `<tr>
-      <td>${esc(x.name)}
+      <td>${x.symbol ? `<button class="link position-link" data-quote="${x.id}">${esc(x.name)}</button>` : esc(x.name)}
         <div class="muted small">${esc([x.symbol, x.value_only ? "value from statement" : "",
           several ? `${x.account}${state.owner === "all" ? " · " + ownerName(x.owner_id) : ""}` : ""].filter(Boolean).join(" · "))}</div>
         ${x.problem ? `<div class="warn">${esc(x.problem)}</div>` : ""}</td>
@@ -301,6 +302,117 @@ function renderPortfolio(p) {
       <td class="num"><span class="share-bar" style="--w:${Math.round((x.share || 0) * 100)}%"></span>${x.share != null ? Math.round(x.share * 100) + "%" : "–"}</td>
       <td class="num ${x.day_change > 0 ? "up" : x.day_change < 0 ? "down" : "muted"}">${esc(pct(x.day_change))}</td></tr>`).join("")}
     </tbody></table></div>`;
+}
+
+// --- position pop-up: price chart from Yahoo Finance --------------------------------------
+
+const quoteState = { position: null, range: "1y" };
+
+$("#holdings").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-quote]");
+  if (!b) return;
+  quoteState.position = state.portfolio.positions.find((x) => x.id === Number(b.dataset.quote));
+  openQuote();
+});
+
+$("#quote-ranges").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-range]");
+  if (!b) return;
+  quoteState.range = b.dataset.range;
+  loadQuote();
+});
+
+$("#quote-dialog").addEventListener("close", () => ($(".tooltip", $("#quote-dialog")).hidden = true));
+
+$("#quote-dialog").addEventListener("click", (e) => {
+  // a click on the backdrop (the dialog element itself) or the ✕ closes it
+  if (e.target === e.currentTarget || e.target.closest("[data-close]")) e.currentTarget.close();
+});
+
+function openQuote() {
+  const x = quoteState.position;
+  $("#quote-title").textContent = x.name;
+  $("#quote-sub").textContent = x.symbol;
+  $("#quote-yahoo").href = `https://finance.yahoo.com/quote/${encodeURIComponent(x.symbol)}`;
+  $("#quote-position").innerHTML = `You hold <strong>${esc(quantity(x.quantity))}</strong> · worth ${esc(money(x.value_base, state.base, 0))}
+    · ${esc(x.account)}${state.family.length > 1 ? " · " + esc(ownerName(x.owner_id)) : ""}`;
+  $("#quote-dialog").showModal();
+  loadQuote();
+}
+
+async function loadQuote() {
+  const x = quoteState.position;
+  document.querySelectorAll("#quote-ranges button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.range === quoteState.range);
+    b.setAttribute("aria-pressed", b.dataset.range === quoteState.range);
+  });
+  const box = $("#quote-chart");
+  box.innerHTML = `<div class="empty">Loading…</div>`;
+  try {
+    const q = await api(`/api/quote/${encodeURIComponent(x.symbol)}?range=${quoteState.range}`);
+    if (quoteState.position !== x) return;  // another position was opened meanwhile
+    $("#quote-title").textContent = q.name || x.name;
+    $("#quote-sub").textContent = [q.symbol, q.exchange, q.currency].filter(Boolean).join(" · ");
+    const first = q.points[0]?.close, last = q.price ?? q.points.at(-1)?.close;
+    const change = first ? last / first - 1 : null;
+    const label = { "1mo": "1 month", "6mo": "6 months", "1y": "1 year", "5y": "5 years", max: "all time" }[quoteState.range];
+    $("#quote-figures").innerHTML = `
+      <div><div class="muted small">Price</div><div class="figure">${esc(money(last, q.currency, 2))}</div></div>
+      <div><div class="muted small">${esc(label)}</div><div class="figure ${change > 0 ? "up" : change < 0 ? "down" : ""}">${esc(pct(change))}</div></div>
+      <div class="hide-sm"><div class="muted small">52-week range</div><div class="figure small-figure">${esc(money(q.low_52w, null, 2))} – ${esc(money(q.high_52w, null, 2))}</div></div>`;
+    lineChart(box, q.points, (v) => money(v, q.currency, 2), `${q.name} price`);
+  } catch (err) {
+    box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+  }
+}
+
+function lineChart(box, points, fmt, label) {
+  if (points.length < 2) {
+    box.innerHTML = `<div class="empty">Not enough price data.</div>`;
+    return;
+  }
+  const W = Math.max(box.clientWidth, 260), H = W < 500 ? 180 : 220, L = 52, R = 8, T = 10, B = 24;
+  const xs = points.map((p) => new Date(p.day + "T00:00:00").getTime());
+  const ys = points.map((p) => p.close);
+  const x0 = xs[0], x1 = xs.at(-1);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const pad = (y1 - y0) * 0.08 || y1 * 0.02 || 1;
+  y0 -= pad; y1 += pad;
+  const sx = (x) => L + ((x - x0) / (x1 - x0 || 1)) * (W - L - R);
+  const sy = (y) => T + (1 - (y - y0) / (y1 - y0)) * (H - T - B);
+  const digits = y1 - y0 < 10 ? 2 : 0;
+  const grid = [0, 1, 2, 3].map((i) => y0 + ((y1 - y0) * i) / 3).map((v) =>
+    `<line class="gridline" x1="${L}" x2="${W - R}" y1="${sy(v)}" y2="${sy(v)}"/>
+     <text x="${L - 8}" y="${sy(v) + 4}" text-anchor="end">${esc(money(v, null, digits))}</text>`).join("");
+  const xl = [0, points.length - 1].map((i) =>
+    `<text x="${sx(xs[i])}" y="${H - 6}" text-anchor="${i ? "end" : "start"}">${esc(shortDate(points[i].day))}</text>`).join("");
+  const path = points.map((p, i) => `${i ? "L" : "M"}${sx(xs[i]).toFixed(1)},${sy(p.close).toFixed(1)}`).join("");
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">
+    <g class="axis">${grid}${xl}</g>
+    <path class="area" d="${path}L${sx(x1)},${sy(y0)}L${sx(x0)},${sy(y0)}Z"/><path class="line" d="${path}"/>
+    <line class="cross" y1="${T}" y2="${H - B}" visibility="hidden"/>
+    <circle class="dot" r="5" visibility="hidden"/>
+    <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent"/>
+  </svg>`;
+  // inside a modal dialog (top layer) the page's tooltip would be hidden behind it
+  const svg = $("svg", box), cross = $(".cross", box), dot = $(".dot", box);
+  const tip = box.closest("dialog") ? $(".tooltip", box.closest("dialog")) : $("#tooltip");
+  svg.addEventListener("pointermove", (e) => {
+    const r = svg.getBoundingClientRect();
+    const vx = ((e.clientX - r.left) / r.width) * W;
+    let best = 0;
+    xs.forEach((x, i) => { if (Math.abs(sx(x) - vx) < Math.abs(sx(xs[best]) - vx)) best = i; });
+    const p = points[best], px = sx(xs[best]), py = sy(p.close);
+    cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("visibility", "visible");
+    tip.innerHTML = `<strong>${esc(fmt(p.close))}</strong> · ${esc(shortDate(p.day))}`;
+    tip.hidden = false;
+    tip.style.left = Math.min(r.left + (px / W) * r.width + 12, window.innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = r.top + (py / H) * r.height - tip.offsetHeight - 10 + "px";
+  });
+  svg.addEventListener("pointerleave", () => {
+    cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); tip.hidden = true;
+  });
 }
 
 function accountWarnings(a) {
@@ -607,14 +719,39 @@ function foundBlock(f, i, bank) {
       <label data-new-only>Name of new account <input name="new_name" value="${esc(f.name)}" maxlength="80"></label>
       <label>Balance${f.currency ? ` (${esc(f.currency)})` : ""} <input type="number" step="0.01" name="balance" value="${f.balance ?? ""}"></label>
     </div>
-    ${positions.length ? `<details class="small"><summary>${positions.length} position${positions.length > 1 ? "s" : ""} found</summary>
-      <div class="table-wrap"><table>
-      <thead><tr><th>Name</th><th>ISIN / ticker</th><th class="num">Quantity</th><th class="num">Value</th></tr></thead>
-      <tbody>${positions.map((p) => `<tr><td>${esc(p.name)}</td><td class="small">${esc(p.isin || "")} ${esc(p.symbol || "")}</td>
-        <td class="num">${p.quantity ?? "–"}</td><td class="num">${esc(money(p.value, p.currency, 2))}</td></tr>`).join("")}</tbody></table></div></details>
-      <label class="check" data-holdings-only><input type="checkbox" name="replace_holdings">
-        Replace this account's positions with these (tickers are looked up by ISIN)</label>` : ""}
+    ${positions.length ? `<div class="positions-review">
+      <div class="table-wrap"><table class="review">
+      <thead><tr><th></th><th>Position</th><th>Ticker</th><th class="num">Quantity</th><th class="num hide-sm">Price</th><th class="num">Value</th></tr></thead>
+      <tbody>${positions.map(positionRow).join("")}</tbody></table></div>
+      <p class="muted small">Check the quantity and ticker; you can change both. A ticker marked ✓ matches the price in the file,
+        so the position follows the market. Without a ticker the position keeps the value from the file.</p>
+      <label class="check" data-holdings-only><input type="checkbox" name="replace_holdings" checked>
+        Update this account's positions with these</label>
+      <label class="check" data-holdings-only><input type="checkbox" name="remove_missing">
+        Also remove positions that aren't in this file (only for a complete statement)</label></div>` : ""}
   </div>`;
+}
+
+function positionRow(p, j) {
+  const m = p.match;
+  const status = m ? `<span class="ok" title="Market price ${esc(money(m.price, m.currency, 2))}">✓</span>`
+    : `<span class="muted" title="No ticker with a matching market price found">?</span>`;
+  return `<tr data-pos="${j}">
+    <td><input type="checkbox" name="pos_include" checked aria-label="Include ${esc(p.name)}"></td>
+    <td><input name="pos_name" value="${esc(p.name)}" maxlength="120"></td>
+    <td class="ticker-cell"><input name="pos_symbol" value="${esc(p.symbol || "")}" placeholder="none" maxlength="30">${status}</td>
+    <td class="num"><input name="pos_quantity" type="number" step="any" value="${p.quantity ?? ""}" placeholder="unknown"></td>
+    <td class="num hide-sm">${p.price != null ? esc(money(p.price, p.currency, 2)) : "–"}</td>
+    <td class="num">${esc(money(p.value, p.currency, 2))}</td></tr>`;
+}
+
+function reviewedPositions(block, f) {
+  return [...block.querySelectorAll("[data-pos]")].filter((tr) => $("[name=pos_include]", tr).checked).map((tr) => {
+    const p = f.positions[Number(tr.dataset.pos)];
+    const q = $("[name=pos_quantity]", tr).value;
+    return { name: $("[name=pos_name]", tr).value.trim() || p.name, symbol: $("[name=pos_symbol]", tr).value.trim() || null,
+      isin: p.isin || null, quantity: q === "" ? null : Number(q), value: p.value ?? null, currency: p.currency || null };
+  });
 }
 
 function uploadCard(u) {
@@ -643,17 +780,17 @@ function wireUpload(u) {
   if (!card) return;
   const found = u.extracted?.accounts || [];
   card.querySelectorAll("[data-found]").forEach((block) => {
-    const select = $("[name=target]", block), replace = $("[data-holdings-only]", block), newOnly = $("[data-new-only]", block);
+    const select = $("[name=target]", block), newOnly = $("[data-new-only]", block);
     const include = $("[name=include]", block);
     const sync = () => {
       const isNew = select.value === "new";
       newOnly.hidden = !isNew;
-      if (replace) {
-        // A new account gets its positions anyway; for an existing one only if it is valued by positions.
-        const account = state.accounts.find((a) => a.id === Number(select.value));
-        replace.hidden = isNew || account?.valuation !== "holdings";
-        if (replace.hidden) $("input", replace).checked = false;
-      }
+      // A new account gets its positions anyway; an existing one only if it is valued by positions.
+      const account = state.accounts.find((a) => a.id === Number(select.value));
+      const holdings = !isNew && account?.valuation === "holdings";
+      block.querySelectorAll("[data-holdings-only]").forEach((l) => (l.hidden = !holdings));
+      const review = $(".positions-review", block);
+      if (review) review.hidden = !isNew && !holdings;
       block.classList.toggle("off", !include.checked);
     };
     select.addEventListener("change", sync);
@@ -674,10 +811,10 @@ function wireUpload(u) {
           if (!$("[name=include]", block).checked) continue;
           const f = found[Number(block.dataset.found)];
           const bal = $("[name=balance]", block).value;
-          const item = { balance: bal === "" ? null : Number(bal), positions: f.positions || [], replace_holdings: false };
+          const item = { balance: bal === "" ? null : Number(bal), positions: reviewedPositions(block, f), replace_holdings: false };
           if ($("[name=target]", block).value === "new") {
             if (!bank) throw new Error("Enter the bank for the new account");
-            const hasQuantities = item.positions.some((p) => p.quantity);
+            const hasQuantities = item.positions.length > 0;
             item.new_account = { name: $("[name=new_name]", block).value.trim() || f.name || bank, institution: bank,
               kind: f.kind || "cash", currency: (f.currency || "CHF").toUpperCase(), valuation: hasQuantities ? "holdings" : "balance",
               owner_id: ownerValue($("[name=owner_id]", card).value) };
@@ -685,6 +822,7 @@ function wireUpload(u) {
           } else {
             item.account_id = Number($("[name=target]", block).value);
             item.replace_holdings = $("[name=replace_holdings]", block)?.checked || false;
+            item.remove_missing = $("[name=remove_missing]", block)?.checked || false;
           }
           if (!item.replace_holdings) item.positions = [];
           items.push(item);

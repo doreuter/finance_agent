@@ -350,3 +350,53 @@ def test_existing_value_positions_are_marked_on_upgrade(tmp_path, monkeypatch):
     with db.connect() as c:
         assert {r["name"]: r["value_only"] for r in db.rows(c, "SELECT * FROM holdings")} == {
             "AI & Big Data": 1, "Cash": 0, "VT": 0}
+
+
+def test_quantity_from_value_and_price():
+    from app.match import derive_quantity
+    assert derive_quantity(16605.28, 123.92) == 134
+    assert derive_quantity(20.30, 10.15) == 2
+    assert derive_quantity(100.0, 8.0) == 12.5  # fractional shares stay fractional
+    assert derive_quantity(None, 10) is None and derive_quantity(10, 0) is None
+
+
+def test_ticker_is_used_only_when_its_price_matches(monkeypatch):
+    from app import match
+    quotes = {"TSFA.F": ("EUR", 364.5), "TSM": ("USD", 404.8), "USDEUR=X": ("EUR", 0.89), "WRONG": ("EUR", 50.0)}
+    monkeypatch.setattr(prices, "fetch", lambda s, range_="1mo", client=None: (quotes[s][0], [("2026-11-04", quotes[s][1])])
+                        if s in quotes else (_ for _ in ()).throw(prices.PriceError("unknown")))
+    searches = {"Taiwan Semiconductor": [{"symbol": "WRONG"}, {"symbol": "TSFA.F"}]}
+    monkeypatch.setattr(prices, "search", lambda q, client=None: searches.get(q, []))
+    p = {"name": "TAIWAN SEMICON.MANU.ADR/5", "price": 364.0, "value": 3276.0, "currency": "EUR",
+         "ticker_hints": ["Taiwan Semiconductor"]}
+    out = match.resolve_all({"accounts": [{"positions": [p, {**p, "ticker_hints": ["TSM"]}, {**p, "ticker_hints": []}]}]})
+    found, via_usd, none = out["accounts"][0]["positions"]
+    assert found["quantity"] == 9 and found["symbol"] == "TSFA.F" and found["match"]["price"] == 364.5
+    assert via_usd["symbol"] == "TSM" and via_usd["match"]["quote_currency"] == "USD"  # 404.8 USD = 360.27 EUR
+    assert none["match"] is None and none.get("symbol") is None and none["quantity"] == 9
+
+
+def test_screenshot_positions_update_without_removing_others(client):
+    depot = make_account(client, name="Neon Invest", kind="depot", valuation="holdings")
+    client.put(f"/api/accounts/{depot['id']}/holdings", json=[
+        {"name": "X(IE)-MSCI WORLD 1C", "quantity": None, "manual_price": 15000, "currency": "EUR"},
+        {"name": "Gold (ZKB)", "quantity": None, "manual_price": 9577.60, "currency": "CHF"},
+    ])
+    client.post("/api/upload", files={"file": ("neon.png", b"\x89PNG", "image/png")})
+    upload_id = client.get("/api/uploads").json()[0]["id"]
+    apply = lambda **kw: client.post(f"/api/uploads/{upload_id}/apply", json={"as_of": TODAY, "items": [{
+        "account_id": depot["id"], "replace_holdings": True, **kw,
+        "positions": [{"name": "X(IE)-MSCI WORLD 1C", "symbol": "XDWD.DE", "quantity": 110, "value": 15540.80, "currency": "EUR"}]}]})
+    assert apply().status_code == 200
+    by = {h["name"]: h for h in client.get(f"/api/accounts/{depot['id']}/holdings").json()}
+    assert set(by) == {"X(IE)-MSCI WORLD 1C", "Gold (ZKB)"}  # gold isn't on the screenshot and stays
+    assert by["X(IE)-MSCI WORLD 1C"]["symbol"] == "XDWD.DE" and by["X(IE)-MSCI WORLD 1C"]["quantity"] == 110
+    assert apply(remove_missing=True).status_code == 200
+    assert [h["name"] for h in client.get(f"/api/accounts/{depot['id']}/holdings").json()] == ["X(IE)-MSCI WORLD 1C"]
+
+
+def test_quote_endpoint(client, monkeypatch):
+    monkeypatch.setattr(prices, "quote", lambda symbol, range_: {"symbol": symbol, "range": range_, "points": []})
+    assert client.get("/api/quote/xdwd.de?range=5y").json() == {"symbol": "XDWD.DE", "range": "5y", "points": []}
+    assert client.get("/api/quote/VT?range=2w").status_code == 422
+    assert client.get("/api/quote/a%20b").status_code == 422

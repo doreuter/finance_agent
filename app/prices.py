@@ -66,6 +66,41 @@ def fetch(symbol: str, range_: str = "1mo", client: httpx.Client | None = None) 
             client.close()
 
 
+QUOTE_RANGES = {"1mo": "1d", "6mo": "1d", "1y": "1d", "5y": "1wk", "max": "1mo"}
+
+
+def quote(symbol: str, range_: str = "1y", client: httpx.Client | None = None) -> dict:
+    """Price history and key figures for the position pop-up (fetched live, not stored)."""
+    own = client is None
+    client = client or _client()
+    try:
+        resp = client.get(CHART_URL.format(symbol=symbol), params={"range": range_, "interval": QUOTE_RANGES[range_]})
+        if resp.status_code == 404:
+            raise PriceError(f"unknown symbol {symbol}")
+        resp.raise_for_status()
+        payload = resp.json()
+    except httpx.HTTPError as e:
+        raise PriceError(f"{symbol}: {e}") from e
+    finally:
+        if own:
+            client.close()
+    currency, points = parse_chart(payload)
+    meta = payload["chart"]["result"][0].get("meta", {})
+    divisor = 100.0 if meta.get("currency") == "GBp" else 1.0
+    num = lambda key: meta[key] / divisor if isinstance(meta.get(key), (int, float)) else None
+    return {
+        "symbol": meta.get("symbol") or symbol,
+        "name": meta.get("longName") or meta.get("shortName") or symbol,
+        "exchange": meta.get("fullExchangeName") or meta.get("exchangeName"),
+        "currency": currency,
+        "price": num("regularMarketPrice"),
+        "previous_close": num("chartPreviousClose") if range_ == "1mo" else None,
+        "high_52w": num("fiftyTwoWeekHigh"),
+        "low_52w": num("fiftyTwoWeekLow"),
+        "points": [{"day": d, "close": c} for d, c in points],
+    }
+
+
 def store(symbol: str, currency: str | None, points: list[tuple[str, float]]) -> None:
     with db.connect() as conn:
         conn.executemany(
