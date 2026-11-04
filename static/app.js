@@ -22,6 +22,13 @@ function money(value, currency, digits = 0) {
   return currency ? `${currency} ${n}` : n;
 }
 
+// Shares can be fractional (Neon Invest): show the decimals there are, without padding, so 12.5 never
+// reads as "12.500" (twelve thousand five hundred in German notation).
+function quantity(value) {
+  if (value == null) return "–";
+  return new Intl.NumberFormat("de-CH", { maximumFractionDigits: 6 }).format(value);
+}
+
 function shortDate(iso) {
   if (!iso) return "";
   return new Date(iso + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -287,7 +294,7 @@ function renderPortfolio(p) {
       <td>${esc(x.name)}
         <div class="muted small">${esc([x.symbol, several ? `${x.account}${state.owner === "all" ? " · " + ownerName(x.owner_id) : ""}` : ""].filter(Boolean).join(" · "))}</div>
         ${x.problem ? `<div class="warn">${esc(x.problem)}</div>` : ""}</td>
-      <td class="num hide-sm">${esc(money(x.quantity, null, x.quantity % 1 ? 3 : 0))}</td>
+      <td class="num hide-sm">${esc(quantity(x.quantity))}</td>
       <td class="num hide-sm">${esc(money(x.price, x.price_currency, 2))}</td>
       <td class="num">${esc(money(x.value_base, null))}</td>
       <td class="num"><span class="share-bar" style="--w:${Math.round((x.share || 0) * 100)}%"></span>${x.share != null ? Math.round(x.share * 100) + "%" : "–"}</td>
