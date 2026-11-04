@@ -10,6 +10,7 @@
   --accent: #2a78d6;
   --accent-ink: #ffffff;
   --danger: #c4312f;
+  --good: #1a7f4f;
   --warn-bg: #fff4d6;
   --warn-ink: #7a5300;
   /* categorical slots, fixed order: cash, investments, pillar 3a, pillar 2 */
@@ -30,6 +31,7 @@
     --muted: #9a998f;
     --accent: #3987e5;
     --danger: #e66767;
+    --good: #4fc28a;
     --warn-bg: #3a2e10;
     --warn-ink: #f2c665;
     --kind-cash: #3987e5;
@@ -41,7 +43,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #111110; --surface: #1a1a19; --border: #2e2e2c; --grid: #262624;
-  --text: #f0efec; --text-2: #c3c2b7; --muted: #9a998f; --accent: #3987e5; --danger: #e66767;
+  --text: #f0efec; --text-2: #c3c2b7; --muted: #9a998f; --accent: #3987e5; --danger: #e66767; --good: #4fc28a;
   --warn-bg: #3a2e10; --warn-ink: #f2c665;
   --kind-cash: #3987e5; --kind-depot: #d95926; --kind-pillar3a: #199e70; --kind-pillar2: #c98500;
 }
@@ -201,3 +203,10 @@ td.indent { padding-left: 14px; }
 code { font-size: 13px; background: var(--bg); border-radius: 4px; padding: 1px 4px; }
 code.token { display: block; margin-top: 6px; padding: 8px; word-break: break-all; user-select: all; }
 .button-link { text-decoration: none; display: inline-block; }
+
+/* holdings on the overview */
+.holdings td { vertical-align: middle; }
+.share-bar { display: inline-block; width: 40px; height: 6px; border-radius: 3px; margin-right: 8px; vertical-align: 1px;
+  background: linear-gradient(to right, var(--kind-depot) var(--w), var(--grid) var(--w)); }
+td.up { color: var(--good); }
+td.down { color: var(--danger); }

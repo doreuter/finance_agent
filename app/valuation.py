@@ -117,6 +117,41 @@ def summary(owner: str = "all") -> dict:
     }
 
 
+def portfolio(owner: str = "all") -> dict:
+    """Every position in accounts valued by positions, with its share of the total and the change since
+    the previous close (in the quote currency, so it shows how the security moved, not the CHF/USD rate)."""
+    base = config.base_currency()
+    where, args = owner_filter(owner)
+    with db.connect() as conn:
+        rows = db.rows(conn, "SELECT h.*, a.name AS account, a.institution, a.owner_id FROM holdings h "
+                             "JOIN accounts a ON a.id = h.account_id WHERE a.archived = 0 AND a.valuation = 'holdings'"
+                             + where + " ORDER BY h.name", *args)
+        out = []
+        for h in rows:
+            value_base, price_day, problem = holding_value_base(conn, h, base)
+            price = prices.latest(conn, h["symbol"]) if h["symbol"] else None
+            prev = None
+            if price:
+                prev = db.row(conn, "SELECT close FROM prices WHERE symbol = ? AND day < ? ORDER BY day DESC LIMIT 1",
+                              h["symbol"], price["day"])
+            change = price["close"] / prev["close"] - 1 if price and prev and prev["close"] else None
+            out.append({
+                "id": h["id"], "name": h["name"], "symbol": h["symbol"], "isin": h["isin"], "quantity": h["quantity"],
+                "account": h["account"], "institution": h["institution"], "owner_id": h["owner_id"],
+                "price": price["close"] if price else h["manual_price"],
+                "price_currency": (price["currency"] if price else None) or h["currency"],
+                "price_day": price_day, "value_base": value_base, "day_change": change,
+                "day_change_base": value_base * change / (1 + change) if value_base is not None and change is not None else None,
+                "problem": problem,
+            })
+    total = sum(p["value_base"] for p in out if p["value_base"] is not None)
+    for p in out:
+        p["share"] = p["value_base"] / total if total and p["value_base"] is not None else None
+    out.sort(key=lambda p: p["value_base"] if p["value_base"] is not None else -1, reverse=True)
+    moved = [p["day_change_base"] for p in out if p["day_change_base"] is not None]
+    return {"base_currency": base, "total": total, "day_change_base": sum(moved) if moved else None, "positions": out}
+
+
 def record_today() -> None:
     """Store today's value of every account, for the history chart."""
     today = date.today().isoformat()

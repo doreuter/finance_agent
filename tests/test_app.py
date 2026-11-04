@@ -292,3 +292,22 @@ def test_setup_rejects_other_files(anon):
 def test_security_headers(client):
     r = client.get("/")
     assert r.headers["x-frame-options"] == "DENY" and "default-src 'self'" in r.headers["content-security-policy"]
+
+
+def test_portfolio_lists_positions_with_share_and_day_change(client):
+    depot = make_account(client, name="Neon Invest", kind="depot", valuation="holdings", owner_id=client.user["id"])
+    client.put(f"/api/accounts/{depot['id']}/holdings", json=[
+        {"name": "Vanguard Total World", "symbol": "VT", "quantity": 10, "currency": "USD"},
+        {"name": "Cash", "quantity": 200, "manual_price": 1, "currency": "CHF"},
+    ])
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    store_price("VT", yesterday, 100.0, "USD")
+    store_price("VT", TODAY, 110.0, "USD")
+    store_price("USDCHF=X", TODAY, 0.8, "CHF")
+    p = client.get("/api/portfolio").json()
+    assert p["total"] == pytest.approx(880 + 200)
+    vt, cash = p["positions"]  # largest first
+    assert vt["name"] == "Vanguard Total World" and vt["price"] == 110 and vt["day_change"] == pytest.approx(0.1)
+    assert vt["share"] == pytest.approx(880 / 1080) and vt["day_change_base"] == pytest.approx(80)
+    assert cash["day_change"] is None and p["day_change_base"] == pytest.approx(80)
+    assert client.get("/api/portfolio?owner=joint").json()["positions"] == []

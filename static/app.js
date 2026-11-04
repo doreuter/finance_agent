@@ -174,7 +174,7 @@ $("#owner-filter").addEventListener("click", (e) => {
 async function loadOverview() {
   renderOwnerFilter();
   const q = `?owner=${encodeURIComponent(state.owner)}`;
-  const [summary, history] = await Promise.all([api("/api/summary" + q), api("/api/history" + q)]);
+  const [summary, history, portfolio] = await Promise.all([api("/api/summary" + q), api("/api/history" + q), api("/api/portfolio" + q)]);
   const cur = summary.base_currency;
   $("#total").textContent = money(summary.total, cur);
   const sub = [];
@@ -191,6 +191,7 @@ async function loadOverview() {
   state.base = cur;
   renderHistory(history, cur);
   renderAccountsTable(summary);
+  renderPortfolio(portfolio);
   updateInboxBadge();
 }
 
@@ -265,6 +266,34 @@ window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => { if (!$("#tab-overview").hidden && state.history) renderHistory(state.history, state.base); }, 200);
 });
+
+function pct(x, digits = 1) {
+  if (x == null) return "–";
+  return `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x * 100).toFixed(digits)}%`;
+}
+
+function renderPortfolio(p) {
+  const card = $("#holdings-card");
+  card.hidden = !p.positions.length;
+  if (!p.positions.length) return;
+  const cur = p.base_currency;
+  const day = p.day_change_base;
+  $("#holdings-sub").textContent = `${money(p.total, cur)}${day != null ? ` · today ${day >= 0 ? "+" : "−"}${money(Math.abs(day), cur)}` : ""}`;
+  const several = new Set(p.positions.map((x) => x.account + x.owner_id)).size > 1;
+  $("#holdings").innerHTML = `<div class="table-wrap"><table class="holdings">
+    <thead><tr><th>Position</th><th class="num hide-sm">Quantity</th><th class="num hide-sm">Price</th>
+      <th class="num">${esc(cur)}</th><th class="num">Share</th><th class="num">Today</th></tr></thead>
+    <tbody>${p.positions.map((x) => `<tr>
+      <td>${esc(x.name)}
+        <div class="muted small">${esc([x.symbol, several ? `${x.account}${state.owner === "all" ? " · " + ownerName(x.owner_id) : ""}` : ""].filter(Boolean).join(" · "))}</div>
+        ${x.problem ? `<div class="warn">${esc(x.problem)}</div>` : ""}</td>
+      <td class="num hide-sm">${esc(money(x.quantity, null, x.quantity % 1 ? 3 : 0))}</td>
+      <td class="num hide-sm">${esc(money(x.price, x.price_currency, 2))}</td>
+      <td class="num">${esc(money(x.value_base, null))}</td>
+      <td class="num"><span class="share-bar" style="--w:${Math.round((x.share || 0) * 100)}%"></span>${x.share != null ? Math.round(x.share * 100) + "%" : "–"}</td>
+      <td class="num ${x.day_change > 0 ? "up" : x.day_change < 0 ? "down" : "muted"}">${esc(pct(x.day_change))}</td></tr>`).join("")}
+    </tbody></table></div>`;
+}
 
 function accountWarnings(a) {
   const w = [...a.problems];

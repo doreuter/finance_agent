@@ -264,6 +264,11 @@ def history(owner: str = "all"):
     return valuation.history(owner)
 
 
+@app.get("/api/portfolio")
+def portfolio(owner: str = "all"):
+    return valuation.portfolio(owner)
+
+
 @app.post("/api/refresh")
 def refresh():
     return {"errors": valuation.refresh()}

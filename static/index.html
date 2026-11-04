@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FinanceAgent</title>
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
   <header class="top">
@@ -59,6 +59,11 @@
         <h2>Split</h2>
         <div id="split-bar" class="split-bar" role="img"></div>
         <ul id="split-legend" class="legend"></ul>
+      </div>
+
+      <div class="card" id="holdings-card" hidden>
+        <div class="upload-head"><h2>Holdings</h2><span id="holdings-sub" class="muted small"></span></div>
+        <div id="holdings"></div>
       </div>
 
       <div class="card">
@@ -166,6 +171,6 @@
   <datalist id="bank-options"></datalist>
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>
