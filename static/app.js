@@ -292,10 +292,11 @@ function renderPortfolio(p) {
       <th class="num">${esc(cur)}</th><th class="num">Share</th><th class="num">Today</th></tr></thead>
     <tbody>${p.positions.map((x) => `<tr>
       <td>${esc(x.name)}
-        <div class="muted small">${esc([x.symbol, several ? `${x.account}${state.owner === "all" ? " · " + ownerName(x.owner_id) : ""}` : ""].filter(Boolean).join(" · "))}</div>
+        <div class="muted small">${esc([x.symbol, x.value_only ? "value from statement" : "",
+          several ? `${x.account}${state.owner === "all" ? " · " + ownerName(x.owner_id) : ""}` : ""].filter(Boolean).join(" · "))}</div>
         ${x.problem ? `<div class="warn">${esc(x.problem)}</div>` : ""}</td>
       <td class="num hide-sm">${esc(quantity(x.quantity))}</td>
-      <td class="num hide-sm">${esc(money(x.price, x.price_currency, 2))}</td>
+      <td class="num hide-sm">${x.price == null ? "–" : esc(money(x.price, x.price_currency, 2))}</td>
       <td class="num">${esc(money(x.value_base, null))}</td>
       <td class="num"><span class="share-bar" style="--w:${Math.round((x.share || 0) * 100)}%"></span>${x.share != null ? Math.round(x.share * 100) + "%" : "–"}</td>
       <td class="num ${x.day_change > 0 ? "up" : x.day_change < 0 ? "down" : "muted"}">${esc(pct(x.day_change))}</td></tr>`).join("")}
@@ -461,7 +462,7 @@ function holdingRow(h = {}) {
   return `<tr>
     <td><input name="name" value="${esc(h.name)}" placeholder="Vanguard FTSE All-World" required></td>
     <td><input name="symbol" value="${esc(h.symbol)}" placeholder="optional" list="symbol-options"></td>
-    <td><input name="quantity" type="number" step="any" value="${h.quantity ?? ""}" required></td>
+    <td><input name="quantity" type="number" step="any" value="${h.quantity ?? ""}" placeholder="unknown"></td>
     <td><input name="manual_price" type="number" step="any" value="${h.manual_price ?? ""}" placeholder="only without ticker"></td>
     <td><input name="currency" value="${esc(h.currency || "CHF")}" maxlength="3" style="width:64px"></td>
     <td class="num muted small">${h.value_base != null ? esc(money(h.value_base, null)) : esc(h.problem || "")}</td>
@@ -473,7 +474,8 @@ async function renderHoldings(a) {
   $("#detail-body").innerHTML = `
     <h2>Positions</h2>
     <p class="muted small">Enter what you hold; prices are fetched daily. Ticker = Yahoo Finance symbol (e.g. VWRL.SW, CHSPI.SW, VT).
-      For cash in the depot leave the ticker empty: quantity = amount, price = 1.</p>
+      For cash in the depot leave the ticker empty: quantity = amount, price = 1.
+      Quantity unknown: leave it empty and put the position's total value under Price; it then stays at that value until you change it.</p>
     <form id="symbol-search" class="row">
       <label>Find a ticker by name or ISIN <input name="q" placeholder="IE00B3RBWM25"></label>
       <button class="ghost">Search</button>
@@ -508,7 +510,7 @@ async function renderHoldings(a) {
     e.preventDefault();
     const body = [...tbody.querySelectorAll("tr")].map((tr) => {
       const v = (n) => tr.querySelector(`[name=${n}]`).value.trim();
-      return { name: v("name"), symbol: v("symbol") || null, quantity: Number(v("quantity")),
+      return { name: v("name"), symbol: v("symbol") || null, quantity: v("quantity") === "" ? null : Number(v("quantity")),
         manual_price: v("manual_price") ? Number(v("manual_price")) : null, currency: (v("currency") || "CHF").toUpperCase() };
     });
     const btn = e.submitter;

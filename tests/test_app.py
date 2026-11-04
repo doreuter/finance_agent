@@ -162,7 +162,9 @@ def test_apply_positions_looks_up_tickers_by_isin(client, monkeypatch):
     holdings = client.get(f"/api/accounts/{depot['id']}/holdings").json()
     by = {h["name"]: h for h in holdings}
     assert by["Vanguard FTSE All-World"]["symbol"] == "VWRL.SW"
-    assert by["Unknown fund"]["symbol"] is None and by["Unknown fund"]["manual_price"] == 300
+    # quantity known but no ticker: the quantity is kept, the price derived from the stated value
+    assert by["Unknown fund"]["symbol"] is None
+    assert by["Unknown fund"]["quantity"] == 3 and by["Unknown fund"]["manual_price"] == pytest.approx(100)
 
 
 def test_failed_extraction_is_kept_for_retry(client, monkeypatch):
@@ -311,3 +313,40 @@ def test_portfolio_lists_positions_with_share_and_day_change(client):
     assert vt["share"] == pytest.approx(880 / 1080) and vt["day_change_base"] == pytest.approx(80)
     assert cash["day_change"] is None and p["day_change_base"] == pytest.approx(80)
     assert client.get("/api/portfolio?owner=joint").json()["positions"] == []
+
+
+def test_position_with_only_a_value_has_no_quantity(client):
+    depot = make_account(client, name="Neon Invest", kind="depot", valuation="holdings")
+    client.post("/api/upload", files={"file": ("neon.png", b"\x89PNG", "image/png")})
+    upload_id = client.get("/api/uploads").json()[0]["id"]
+    client.post(f"/api/uploads/{upload_id}/apply", json={"as_of": TODAY, "items": [{
+        "account_id": depot["id"], "replace_holdings": True,
+        "positions": [{"name": "AI & Big Data", "value": 19298.45, "currency": "CHF"}]}]})
+    h = client.get(f"/api/accounts/{depot['id']}/holdings").json()[0]
+    assert h["quantity"] is None and h["value_base"] == pytest.approx(19298.45)
+    p = client.get("/api/portfolio").json()["positions"][0]
+    assert p["quantity"] is None and p["price"] is None and p["value_only"] is True
+    # the editor saves it back the same way
+    r = client.put(f"/api/accounts/{depot['id']}/holdings", json=[{"name": "AI & Big Data", "quantity": None, "manual_price": 19000}])
+    assert r.status_code == 200
+    assert client.get("/api/portfolio").json()["positions"][0]["value_only"] is True
+    r = client.put(f"/api/accounts/{depot['id']}/holdings", json=[{"name": "X", "symbol": "VT", "quantity": None}])
+    assert r.status_code == 422
+
+
+def test_existing_value_positions_are_marked_on_upgrade(tmp_path, monkeypatch):
+    import sqlite3
+    from app import db
+    path = tmp_path / "old.db"
+    monkeypatch.setenv("FINANCE_DB", str(path))
+    conn = sqlite3.connect(path)
+    conn.executescript(db.SCHEMA)  # the tables as they were, without value_only
+    conn.execute("INSERT INTO accounts (name, institution, kind, valuation) VALUES ('Neon Invest', 'Neon', 'depot', 'holdings')")
+    conn.executemany("INSERT INTO holdings (account_id, name, symbol, quantity, manual_price, currency) VALUES (1, ?, ?, ?, ?, 'CHF')",
+                     [("AI & Big Data", None, 1, 19298.45), ("Cash", None, 420, 1), ("VT", "VT", 10, None)])
+    conn.commit()
+    conn.close()
+    db.init()
+    with db.connect() as c:
+        assert {r["name"]: r["value_only"] for r in db.rows(c, "SELECT * FROM holdings")} == {
+            "AI & Big Data": 1, "Cash": 0, "VT": 0}

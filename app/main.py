@@ -392,7 +392,7 @@ class HoldingIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     symbol: Optional[str] = Field(None, max_length=30)
     isin: Optional[str] = Field(None, max_length=12)
-    quantity: float
+    quantity: Optional[float] = None  # None = unknown; then manual_price is the position's total value
     manual_price: Optional[float] = None
     currency: str = Field("CHF", pattern=r"^[A-Z]{3}$")
 
@@ -406,6 +406,8 @@ def list_holdings(account_id: int):
         for h in db.rows(conn, "SELECT * FROM holdings WHERE account_id = ? ORDER BY name", account_id):
             value_base, price_day, problem = valuation.holding_value_base(conn, h, base)
             price = prices.latest(conn, h["symbol"]) if h["symbol"] else None
+            if h["value_only"]:
+                h = {**h, "quantity": None}
             out.append({**h, "price": price["close"] if price else h["manual_price"],
                         "price_currency": price["currency"] if price else h["currency"],
                         "price_day": price_day, "value_base": value_base, "problem": problem})
@@ -413,10 +415,15 @@ def list_holdings(account_id: int):
 
 
 def _replace_holdings(conn, account_id: int, holdings: list[HoldingIn]) -> None:
+    for h in holdings:
+        if h.quantity is None and (h.symbol or h.manual_price is None):
+            raise HTTPException(422, f"{h.name}: without a quantity, enter the position's value and no ticker")
     conn.execute("DELETE FROM holdings WHERE account_id = ?", (account_id,))
     conn.executemany(
-        "INSERT INTO holdings (account_id, name, symbol, isin, quantity, manual_price, currency) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [(account_id, h.name, (h.symbol or "").strip().upper() or None, h.isin, h.quantity, h.manual_price, h.currency)
+        "INSERT INTO holdings (account_id, name, symbol, isin, quantity, manual_price, currency, value_only) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [(account_id, h.name, (h.symbol or "").strip().upper() or None, h.isin,
+          1 if h.quantity is None else h.quantity, h.manual_price, h.currency, int(h.quantity is None))
          for h in holdings],
     )
 
@@ -562,8 +569,11 @@ def _positions_to_holdings(positions: list[PositionIn], account_currency: str) -
         currency = (p.currency or account_currency).upper()
         if p.quantity and symbol:
             holdings.append(HoldingIn(name=p.name, symbol=symbol, isin=p.isin, quantity=p.quantity, currency=currency))
+        elif p.quantity and p.value is not None:  # quantity known but no price feed: keep both
+            holdings.append(HoldingIn(name=p.name, isin=p.isin, quantity=p.quantity, manual_price=p.value / p.quantity,
+                                      currency=currency))
         elif p.value is not None:
-            holdings.append(HoldingIn(name=p.name, isin=p.isin, quantity=1, manual_price=p.value, currency=currency))
+            holdings.append(HoldingIn(name=p.name, isin=p.isin, quantity=None, manual_price=p.value, currency=currency))
         else:
             notes.append(f"skipped {p.name}: neither quantity with ticker nor value")
     return holdings, notes

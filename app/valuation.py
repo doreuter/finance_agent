@@ -136,9 +136,10 @@ def portfolio(owner: str = "all") -> dict:
                               h["symbol"], price["day"])
             change = price["close"] / prev["close"] - 1 if price and prev and prev["close"] else None
             out.append({
-                "id": h["id"], "name": h["name"], "symbol": h["symbol"], "isin": h["isin"], "quantity": h["quantity"],
+                "id": h["id"], "name": h["name"], "symbol": h["symbol"], "isin": h["isin"],
+                "quantity": None if h["value_only"] else h["quantity"], "value_only": bool(h["value_only"]),
                 "account": h["account"], "institution": h["institution"], "owner_id": h["owner_id"],
-                "price": price["close"] if price else h["manual_price"],
+                "price": price["close"] if price else (None if h["value_only"] else h["manual_price"]),
                 "price_currency": (price["currency"] if price else None) or h["currency"],
                 "price_day": price_day, "value_base": value_base, "day_change": change,
                 "day_change_base": value_base * change / (1 + change) if value_base is not None and change is not None else None,

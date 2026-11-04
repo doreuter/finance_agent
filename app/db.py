@@ -94,6 +94,13 @@ def uploads_dir() -> Path:
 MIGRATIONS = {
     "accounts": {"owner_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL"},  # NULL = joint
     "uploads": {"user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL"},
+    # 1 = only the position's total value is known (from a statement): stored as quantity 1 x manual_price
+    "holdings": {"value_only": "INTEGER NOT NULL DEFAULT 0"},
+}
+# Run once when a column is added, to fill it for existing rows.
+BACKFILL = {
+    ("holdings", "value_only"): "UPDATE holdings SET value_only = 1 WHERE symbol IS NULL AND quantity = 1 "
+                                "AND manual_price IS NOT NULL AND manual_price != 1",
 }
 
 
@@ -107,6 +114,8 @@ def init() -> None:
             for column, definition in columns.items():
                 if column not in have:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                    if (table, column) in BACKFILL:
+                        conn.execute(BACKFILL[(table, column)])
 
 
 @contextmanager
