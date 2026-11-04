@@ -23,6 +23,7 @@ from typing import Literal, Optional
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from . import advice, auth, briefing, config, db, extract, match, prices, usage, valuation
@@ -720,10 +721,20 @@ def _uploader(request: Request, form_token: str) -> dict:
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile, background: BackgroundTasks, request: Request, token: str = Form("", max_length=200)):
+async def upload(request: Request, background: BackgroundTasks):
     """Accepts a screenshot, PDF statement or CSV (from the web page or the iPhone Shortcut); Claude reads it
-    in the background and the result waits in the inbox for review."""
-    request.state.user = _uploader(request, token)
+    in the background and the result waits in the inbox for review. The file may come in any form field
+    ('file' preferred), since hand-made Shortcuts name it differently."""
+    form = await request.form(max_files=5, max_fields=20)
+    token = form.get("token")
+    request.state.user = _uploader(request, token[:200] if isinstance(token, str) else "")
+    files = [(key, value) for key, value in form.multi_items() if isinstance(value, StarletteUploadFile)]
+    file = next((v for k, v in files if k == "file"), files[0][1] if files else None)
+    if file is None:
+        received = ", ".join(
+            f"{key} (text{'' if key == 'token' else ' ' + repr(str(value)[:40])})" for key, value in form.multi_items()) or "nothing"
+        raise HTTPException(422, f"No file arrived. Received: {received}. In the Shortcut, the form field 'file' "
+                                 "must be of type File and contain the Shortcut Input.")
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty file")

@@ -726,9 +726,9 @@ def test_shortcut_build_has_the_upload_request():
     import make_shortcut
     w = make_shortcut.build("https://x.example/api/upload", "fa_token")
     actions = [a["WFWorkflowActionIdentifier"] for a in w["WFWorkflowActions"]]
-    assert actions == ["is.workflow.actions.gettext", "is.workflow.actions.gettext", "is.workflow.actions.repeat.each",
-                       "is.workflow.actions.downloadurl", "is.workflow.actions.notification", "is.workflow.actions.repeat.each"]
-    request = w["WFWorkflowActions"][3]["WFWorkflowActionParameters"]
+    assert actions == ["is.workflow.actions.gettext", "is.workflow.actions.gettext", "is.workflow.actions.downloadurl",
+                       "is.workflow.actions.showresult"]
+    request = w["WFWorkflowActions"][2]["WFWorkflowActionParameters"]
     assert request["WFHTTPMethod"] == "POST" and request["WFHTTPBodyType"] == "Form"
     assert [q["DefaultValue"] for q in w["WFWorkflowImportQuestions"]] == ["https://x.example/api/upload", "fa_token"]
 
@@ -745,3 +745,15 @@ def test_upload_token_is_accepted_however_it_is_pasted(client):
     r = client.post("/api/upload", headers={"Authorization": "Bearer fa_old_token_abcd"}, files=png)
     assert r.status_code == 401 and "ends in …abcd" in r.json()["detail"]
     assert client.get("/api/uploads", headers={"Authorization": f"Bearer {token}"}).status_code == 401  # upload only
+
+
+def test_upload_file_may_come_in_any_field_and_missing_file_is_explained(client):
+    token = client.post("/api/me/upload-token").json()["token"]
+    client.post("/api/logout")
+    auth = {"Authorization": f"Bearer {token}"}
+    r = client.post("/api/upload", headers=auth, files={"Shortcut Input": ("IMG_1.png", b"\x89PNG", "image/png")})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/upload", headers=auth, data={"token": token, "file": "IMG_1234.png"})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "file (text 'IMG_1234.png')" in detail and "token (text)" in detail and token not in detail
