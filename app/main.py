@@ -396,6 +396,7 @@ class HoldingIn(BaseModel):
     quantity: Optional[float] = None  # None = unknown; then manual_price is the position's total value
     manual_price: Optional[float] = None
     currency: str = Field("CHF", pattern=r"^[A-Z]{3}$")
+    replaces_id: Optional[int] = None  # an upload's position updating this existing holding
 
 
 @app.get("/api/accounts/{account_id}/holdings")
@@ -433,18 +434,20 @@ def _insert_holdings(conn, account_id: int, holdings: list[HoldingIn]) -> None:
     )
 
 
-def _merge_holdings(conn, account_id: int, holdings: list[HoldingIn]) -> None:
-    """Update positions that are already there (same ticker, ISIN or name) and add new ones; positions
-    the file doesn't show stay, since a screenshot often shows only part of the portfolio."""
-    norm = lambda name: re.sub(r"[^a-z0-9]", "", (name or "").lower())
+def _merge_holdings(conn, account_id: int, holdings: list[HoldingIn], reviewed: bool = False) -> None:
+    """Update positions that are already there and add new ones; positions the file doesn't show stay,
+    since a screenshot often shows only part of the portfolio. Which existing position an incoming one
+    updates was chosen in the review (replaces_id), or is matched by ticker, ISIN or a similar name."""
     keep = db.rows(conn, "SELECT * FROM holdings WHERE account_id = ?", account_id)
     for h in holdings:
-        symbol = (h.symbol or "").strip().upper() or None
-        same = next((e for e in keep if (symbol and e["symbol"] == symbol) or (h.isin and e["isin"] == h.isin)
-                     or norm(e["name"]) == norm(h.name)), None)
+        if reviewed:
+            same = next((e for e in keep if e["id"] == h.replaces_id), None) if h.replaces_id else None
+        else:
+            symbol = (h.symbol or "").strip().upper() or None
+            same = next((e for e in keep if match.same_position(e, symbol, h.isin, h.name)), None)
         if same:
             keep.remove(same)
-            conn.execute("DELETE FROM holdings WHERE id = ?", (same["id"],))
+            conn.execute("DELETE FROM holdings WHERE id = ? AND account_id = ?", (same["id"], account_id))
     _insert_holdings(conn, account_id, holdings)
 
 
@@ -567,6 +570,7 @@ class PositionIn(BaseModel):
     quantity: Optional[float] = None
     value: Optional[float] = None
     currency: Optional[str] = None
+    replaces_id: Optional[int] = None  # the existing holding this position updates; None = a new position
 
 
 class ApplyItem(BaseModel):
@@ -576,6 +580,7 @@ class ApplyItem(BaseModel):
     balance: Optional[float] = None
     replace_holdings: bool = False  # update the account's positions with these
     remove_missing: bool = False    # ...and delete positions the file doesn't list (a full statement)
+    positions_reviewed: bool = False  # replaces_id was chosen in the review; otherwise matched automatically
     positions: list[PositionIn] = []
 
 
@@ -598,14 +603,14 @@ def _positions_to_holdings(positions: list[PositionIn], account_currency: str) -
                 symbol = None
             if not symbol:
                 notes.append(f"no ticker found for {p.name} ({p.isin}); kept at its stated value")
-        currency = (p.currency or account_currency).upper()
+        common = {"name": p.name, "isin": p.isin, "currency": (p.currency or account_currency).upper(),
+                  "replaces_id": p.replaces_id}
         if p.quantity and symbol:
-            holdings.append(HoldingIn(name=p.name, symbol=symbol, isin=p.isin, quantity=p.quantity, currency=currency))
+            holdings.append(HoldingIn(**common, symbol=symbol, quantity=p.quantity))
         elif p.quantity and p.value is not None:  # quantity known but no price feed: keep both
-            holdings.append(HoldingIn(name=p.name, isin=p.isin, quantity=p.quantity, manual_price=p.value / p.quantity,
-                                      currency=currency))
+            holdings.append(HoldingIn(**common, quantity=p.quantity, manual_price=p.value / p.quantity))
         elif p.value is not None:
-            holdings.append(HoldingIn(name=p.name, isin=p.isin, quantity=None, manual_price=p.value, currency=currency))
+            holdings.append(HoldingIn(**common, quantity=None, manual_price=p.value))
         else:
             notes.append(f"skipped {p.name}: neither quantity with ticker nor value")
     return holdings, notes
@@ -638,7 +643,7 @@ def apply_upload(upload_id: int, body: ApplyIn):
                 if item.remove_missing or item.new_account:
                     _replace_holdings(conn, account_id, holdings_by_item[n])
                 else:
-                    _merge_holdings(conn, account_id, holdings_by_item[n])
+                    _merge_holdings(conn, account_id, holdings_by_item[n], item.positions_reviewed)
                 replaced = True
             if item.balance is not None:
                 _add_balance(conn, account_id, body.as_of.isoformat(), item.balance, "upload", f"upload #{upload_id}")

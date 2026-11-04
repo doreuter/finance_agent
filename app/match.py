@@ -33,6 +33,35 @@ def derive_quantity(value: float | None, price: float | None) -> float | None:
     return round(q, 4)
 
 
+def _norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def _bigrams(text: str) -> set[str]:
+    return {text[i:i + 2] for i in range(len(text) - 1)}
+
+
+def same_name(a: str, b: str) -> bool:
+    """True for the same security written differently: "Nasdaq 100 (Xtrac..." vs "Nasdaq 100 (Xtrackers)",
+    "TAIWAN SEMICON.MANU.ADR/5" vs "Taiwan Semicon. Manu. ADR/5"."""
+    truncated = any(n.rstrip().endswith(("...", "…")) for n in (a, b))
+    x, y = _norm(a), _norm(b)
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    short, long_ = sorted((x, y), key=len)
+    if truncated and len(short) >= 5 and long_.startswith(short):
+        return True
+    bx, by = _bigrams(x), _bigrams(y)
+    return bool(bx and by) and 2 * len(bx & by) / (len(bx) + len(by)) >= 0.85
+
+
+def same_position(existing: dict, symbol: str | None, isin: str | None, name: str) -> bool:
+    return bool((symbol and existing.get("symbol") == symbol) or (isin and existing.get("isin") == isin)
+                or same_name(existing.get("name") or "", name))
+
+
 class _Quotes:
     """Latest closes and FX rates, fetched once per extraction."""
 

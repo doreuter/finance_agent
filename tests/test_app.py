@@ -400,3 +400,45 @@ def test_quote_endpoint(client, monkeypatch):
     assert client.get("/api/quote/xdwd.de?range=5y").json() == {"symbol": "XDWD.DE", "range": "5y", "points": []}
     assert client.get("/api/quote/VT?range=2w").status_code == 422
     assert client.get("/api/quote/a%20b").status_code == 422
+
+
+def test_same_name_handles_truncation_and_spelling():
+    from app.match import same_name
+    assert same_name("Nasdaq 100 (Xtrac...", "Nasdaq 100 (Xtrackers)")
+    assert same_name("Eurozone Stocks (Swissc…", "Eurozone Stocks (Swisscanto)")
+    assert same_name("TAIWAN SEMICON.MANU.ADR/5", "Taiwan Semicon. Manu. ADR/5")
+    assert same_name("X(IE)-MSCI WORLD 1C", "X(IE)-MSCI WORLD 1C ")
+    assert not same_name("X(IE)-MSCI WORLD 1C", "X(IE)-MSCI WO.IN.TE. 1CDL")
+    assert not same_name("S&P 500 (Xtracker...", "Nasdaq 100 (Xtrackers)")
+    assert not same_name("Gold", "Gold (ZKB)")  # untruncated prefix of a different name
+
+
+def test_upload_updates_truncated_names_instead_of_duplicating(client):
+    depot = make_account(client, name="Neon Invest", kind="depot", valuation="holdings")
+    other = make_account(client, name="Other depot", kind="depot", valuation="holdings")
+    client.put(f"/api/accounts/{depot['id']}/holdings", json=[
+        {"name": "Nasdaq 100 (Xtrac...", "quantity": None, "manual_price": 16899.48, "currency": "CHF"},
+        {"name": "Gold (ZKB)", "quantity": None, "manual_price": 9577.60, "currency": "CHF"},
+    ])
+    client.put(f"/api/accounts/{other['id']}/holdings", json=[{"name": "Foreign", "quantity": 1, "manual_price": 5}])
+    foreign_id = client.get(f"/api/accounts/{other['id']}/holdings").json()[0]["id"]
+    names = lambda: sorted(h["name"] for h in client.get(f"/api/accounts/{depot['id']}/holdings").json())
+
+    def apply(positions, **kw):
+        client.post("/api/upload", files={"file": ("neon.png", b"\x89PNG", "image/png")})
+        upload_id = client.get("/api/uploads").json()[0]["id"]
+        r = client.post(f"/api/uploads/{upload_id}/apply", json={"as_of": TODAY, "items": [{
+            "account_id": depot["id"], "replace_holdings": True, "positions": positions, **kw}]})
+        assert r.status_code == 200, r.text
+
+    # automatic matching (no review): the truncated name is recognised
+    apply([{"name": "Nasdaq 100 (Xtrackers)", "quantity": None, "value": 17000, "currency": "CHF"}])
+    assert names() == ["Gold (ZKB)", "Nasdaq 100 (Xtrackers)"]
+    # reviewed: the user's choice wins, even for a name that doesn't look alike
+    gold_id = next(h["id"] for h in client.get(f"/api/accounts/{depot['id']}/holdings").json() if h["name"] == "Gold (ZKB)")
+    apply([{"name": "ZKB Gold ETF AA CHF", "value": 9600, "currency": "CHF", "replaces_id": gold_id}], positions_reviewed=True)
+    assert names() == ["Nasdaq 100 (Xtrackers)", "ZKB Gold ETF AA CHF"]
+    # reviewed as new: added, nothing replaced; a holding of another account is never touched
+    apply([{"name": "Nasdaq 100 (Xtrackers)", "value": 1, "currency": "CHF", "replaces_id": foreign_id}], positions_reviewed=True)
+    assert names() == ["Nasdaq 100 (Xtrackers)", "Nasdaq 100 (Xtrackers)", "ZKB Gold ETF AA CHF"]
+    assert len(client.get(f"/api/accounts/{other['id']}/holdings").json()) == 1

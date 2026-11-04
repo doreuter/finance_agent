@@ -721,7 +721,8 @@ function foundBlock(f, i, bank) {
     </div>
     ${positions.length ? `<div class="positions-review">
       <div class="table-wrap"><table class="review">
-      <thead><tr><th></th><th>Position</th><th>Ticker</th><th class="num">Quantity</th><th class="num hide-sm">Price</th><th class="num">Value</th></tr></thead>
+      <thead><tr><th></th><th>Position</th><th>Ticker</th><th class="num">Quantity</th><th class="num hide-sm">Price</th><th class="num">Value</th>
+        <th data-updates-col>Updates</th></tr></thead>
       <tbody>${positions.map(positionRow).join("")}</tbody></table></div>
       <p class="muted small">Check the quantity and ticker; you can change both. A ticker marked ✓ matches the price in the file,
         so the position follows the market. Without a ticker the position keeps the value from the file.</p>
@@ -742,7 +743,44 @@ function positionRow(p, j) {
     <td class="ticker-cell"><input name="pos_symbol" value="${esc(p.symbol || "")}" placeholder="none" maxlength="30">${status}</td>
     <td class="num"><input name="pos_quantity" type="number" step="any" value="${p.quantity ?? ""}" placeholder="unknown"></td>
     <td class="num hide-sm">${p.price != null ? esc(money(p.price, p.currency, 2)) : "–"}</td>
-    <td class="num">${esc(money(p.value, p.currency, 2))}</td></tr>`;
+    <td class="num">${esc(money(p.value, p.currency, 2))}</td>
+    <td data-updates-col><select name="pos_replaces" aria-label="Existing position this updates"></select></td></tr>`;
+}
+
+// Same rules as the server (match.same_name): a shortened or slightly different name is the same position.
+const normName = (n) => (n || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+function bigrams(t) { const b = new Set(); for (let i = 0; i < t.length - 1; i++) b.add(t.slice(i, i + 2)); return b; }
+function sameName(a, b) {
+  const truncated = [a, b].some((n) => /(\.\.\.|…)\s*$/.test(n || ""));
+  const x = normName(a), y = normName(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  if (truncated && short.length >= 5 && long.startsWith(short)) return true;
+  const bx = bigrams(x), by = bigrams(y);
+  const common = [...bx].filter((g) => by.has(g)).length;
+  return bx.size > 0 && by.size > 0 && (2 * common) / (bx.size + by.size) >= 0.85;
+}
+
+function samePosition(h, p, symbol) {
+  return (symbol && h.symbol === symbol.toUpperCase()) || (p.isin && h.isin === p.isin) || sameName(h.name, p.name);
+}
+
+// Fill the "Updates" choice of each detected position with the target account's current positions.
+async function fillReplaces(block, f, accountId) {
+  const col = block.querySelectorAll("[data-updates-col]");
+  if (!accountId) { col.forEach((c) => (c.hidden = true)); return; }
+  const existing = await api(`/api/accounts/${accountId}/holdings`);
+  col.forEach((c) => (c.hidden = !existing.length));
+  const taken = new Set();
+  block.querySelectorAll("[data-pos]").forEach((tr) => {
+    const p = f.positions[Number(tr.dataset.pos)];
+    const symbol = $("[name=pos_symbol]", tr).value.trim();
+    const guess = existing.find((h) => !taken.has(h.id) && samePosition(h, p, symbol));
+    if (guess) taken.add(guess.id);
+    $("[name=pos_replaces]", tr).innerHTML = `<option value="">New position</option>` + existing.map((h) =>
+      `<option value="${h.id}" ${guess?.id === h.id ? "selected" : ""}>${esc(h.name)}${h.symbol ? " · " + esc(h.symbol) : ""}</option>`).join("");
+  });
 }
 
 function reviewedPositions(block, f) {
@@ -750,7 +788,8 @@ function reviewedPositions(block, f) {
     const p = f.positions[Number(tr.dataset.pos)];
     const q = $("[name=pos_quantity]", tr).value;
     return { name: $("[name=pos_name]", tr).value.trim() || p.name, symbol: $("[name=pos_symbol]", tr).value.trim() || null,
-      isin: p.isin || null, quantity: q === "" ? null : Number(q), value: p.value ?? null, currency: p.currency || null };
+      isin: p.isin || null, quantity: q === "" ? null : Number(q), value: p.value ?? null, currency: p.currency || null,
+      replaces_id: Number($("[name=pos_replaces]", tr).value) || null };
   });
 }
 
@@ -791,6 +830,10 @@ function wireUpload(u) {
       block.querySelectorAll("[data-holdings-only]").forEach((l) => (l.hidden = !holdings));
       const review = $(".positions-review", block);
       if (review) review.hidden = !isNew && !holdings;
+      if (review && select.value !== block.dataset.filledFor) {
+        block.dataset.filledFor = select.value;
+        fillReplaces(block, found[Number(block.dataset.found)], holdings ? Number(select.value) : null).catch((err) => toast(err.message));
+      }
       block.classList.toggle("off", !include.checked);
     };
     select.addEventListener("change", sync);
@@ -823,6 +866,7 @@ function wireUpload(u) {
             item.account_id = Number($("[name=target]", block).value);
             item.replace_holdings = $("[name=replace_holdings]", block)?.checked || false;
             item.remove_missing = $("[name=remove_missing]", block)?.checked || false;
+            item.positions_reviewed = true;
           }
           if (!item.replace_holdings) item.positions = [];
           items.push(item);
