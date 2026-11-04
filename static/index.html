@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FinanceAgent</title>
-  <link rel="stylesheet" href="styles.css?v=2">
+  <link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
   <header class="top">
@@ -13,23 +13,42 @@
       <button data-tab="overview" class="active">Overview</button>
       <button data-tab="accounts">Accounts</button>
       <button data-tab="inbox">Inbox <span id="inbox-count" class="badge" hidden></span></button>
+      <button data-tab="family">Family</button>
     </nav>
   </header>
 
   <main>
     <section id="login" hidden>
       <form id="login-form" class="card narrow">
-        <h2>Log in</h2>
-        <label>Access token <input type="password" name="token" autocomplete="current-password" required></label>
-        <button class="primary">Log in</button>
+        <h2>Sign in</h2>
+        <label>Username <input name="username" autocomplete="username" required autocapitalize="none"></label>
+        <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+        <button class="primary">Sign in</button>
         <p class="error" id="login-error"></p>
       </form>
     </section>
 
+    <section id="setup-first" hidden>
+      <form id="setup-form" class="card narrow">
+        <h2>Set up FinanceAgent</h2>
+        <p class="muted small">Create your login. You can add your family afterwards under Family.</p>
+        <label>Your name <input name="name" required maxlength="60" autocomplete="name"></label>
+        <label>Username <input name="username" required minlength="2" maxlength="40" autocomplete="username" autocapitalize="none"></label>
+        <label>Password (at least 10 characters) <input type="password" name="password" required minlength="10" autocomplete="new-password"></label>
+        <label id="setup-token-field" hidden>Setup token (from the server's settings) <input name="setup_token" autocomplete="off"></label>
+        <label>Import data from the local app (optional)
+          <input type="file" name="import_db" accept=".db,.sqlite,.sqlite3,application/octet-stream">
+          <span class="muted small">The file data/finance.db from your Mac</span></label>
+        <button class="primary">Create login</button>
+        <p class="error" id="setup-error"></p>
+      </form>
+    </section>
+
     <section id="tab-overview" class="tab">
+      <div id="owner-filter" class="chips" role="group" aria-label="Whose accounts"></div>
       <div class="hero card">
         <div>
-          <div class="muted">Net worth</div>
+          <div class="muted" id="total-label">Net worth</div>
           <div id="total" class="hero-number">–</div>
           <div id="total-sub" class="muted small"></div>
         </div>
@@ -76,6 +95,7 @@
                 </select>
               </label>
               <label>Currency <input name="currency" value="CHF" pattern="[A-Z]{3}" maxlength="3" required></label>
+              <label>Belongs to <select name="owner_id" class="owner-select"></select></label>
               <label>Value from
                 <select name="valuation">
                   <option value="balance">Balance I enter or import</option>
@@ -100,11 +120,52 @@
       </div>
       <div id="uploads"></div>
     </section>
+
+    <section id="tab-family" class="tab" hidden>
+      <div class="card">
+        <h2>Family</h2>
+        <ul id="family-list" class="plain-list"></ul>
+        <details class="add-account">
+          <summary>Add a family member</summary>
+          <p class="muted small">They sign in with this username and password and see all of the family's accounts.
+            Tell them the password in person; they can change it here afterwards.</p>
+          <form id="member-form" class="form-grid">
+            <label>Name <input name="name" required maxlength="60"></label>
+            <label>Username <input name="username" required minlength="2" maxlength="40" autocapitalize="none"></label>
+            <label>Password <input type="password" name="password" required minlength="10" autocomplete="new-password"></label>
+            <button class="primary">Add</button>
+          </form>
+        </details>
+      </div>
+      <div class="card">
+        <h2>iPhone Shortcut</h2>
+        <p class="small">Send screenshots and statements to the Inbox from the share sheet. In the Shortcuts app:
+          <em>Get Contents of URL</em> → <code id="upload-url"></code>, method POST,
+          header <code>Authorization</code> = <code>Bearer &lt;your token&gt;</code>, request body Form, field <code>file</code> = Shortcut Input.</p>
+        <div class="actions"><button id="new-upload-token" class="ghost">Create my upload token</button></div>
+        <p id="upload-token-out" class="small" hidden></p>
+      </div>
+      <div class="card">
+        <h2>My password</h2>
+        <form id="password-form" class="form-grid">
+          <label>Current password <input type="password" name="current" required autocomplete="current-password"></label>
+          <label>New password <input type="password" name="new" required minlength="10" autocomplete="new-password"></label>
+          <button class="ghost">Change</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Data</h2>
+        <div class="actions">
+          <a class="ghost button-link" href="/api/backup">Download backup</a>
+          <button id="logout" class="link danger">Sign out</button>
+        </div>
+      </div>
+    </section>
   </main>
 
   <datalist id="bank-options"></datalist>
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=2"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>

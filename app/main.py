@@ -1,8 +1,11 @@
-"""FastAPI app: accounts, balances, holdings, statement uploads and the net-worth dashboard."""
+"""FastAPI app: family logins, accounts, balances, holdings, statement uploads and the net-worth dashboard."""
 
 from __future__ import annotations
 
 import hmac
+import shutil
+import sqlite3
+import tempfile
 import json
 import logging
 import mimetypes
@@ -14,12 +17,12 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, db, extract, prices, valuation
+from . import auth, config, db, extract, prices, valuation
 
 config.load_dotenv()
 logger = logging.getLogger("financeagent")
@@ -54,49 +57,211 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="FinanceAgent", lifespan=lifespan)
 
 
+OPEN_PATHS = {"/api/status", "/api/login", "/api/setup", "/healthz"}
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    # Everything comes from our own origin; inline style attributes are used for chart widths and colours.
+    "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+    "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=(), payment=(), usb=()",
+}
+
+
 @app.middleware("http")
-async def require_token(request: Request, call_next):
-    """With APP_TOKEN set, every API call needs it as a bearer token (iPhone Shortcut) or the login cookie."""
-    token = config.app_token()
+async def require_login(request: Request, call_next):
+    """Every API call needs a signed-in family member: the session cookie (browser), or a personal
+    upload token as bearer header, which only works for uploads (iPhone Shortcut)."""
     path = request.url.path
-    if token and path.startswith("/api/") and path != "/api/login":
-        supplied = request.cookies.get("fa_token") or ""
-        auth = request.headers.get("authorization", "")
-        if auth.lower().startswith("bearer "):
-            supplied = auth[7:].strip()
-        if not hmac.compare_digest(supplied, token):
+    request.state.user = None
+    if path.startswith("/api/") and path not in OPEN_PATHS:
+        user = auth.user_for_session(request.cookies.get(auth.SESSION_COOKIE, ""))
+        header = request.headers.get("authorization", "")
+        if user is None and header.lower().startswith("bearer ") and path == "/api/upload" and request.method == "POST":
+            user = auth.user_for_upload_token(header[7:].strip())
+        if user is None:
             return JSONResponse({"detail": "login required"}, status_code=401)
+        request.state.user = user
     response = await call_next(request)
+    response.headers.update(SECURITY_HEADERS)
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
     if not path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-cache"  # revalidate, so an updated app.js is picked up
     return response
 
 
+def _user(request: Request) -> dict:
+    return request.state.user
+
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+
+# --- login & family ----------------------------------------------------------
+
+def _set_session_cookie(response: Response, request: Request, token: str) -> None:
+    response.set_cookie(auth.SESSION_COOKIE, token, httponly=True, samesite="lax", secure=request.url.scheme == "https",
+                        max_age=auth.SESSION_DAYS * 86400)
+
+
+@app.get("/api/status")
+def status():
+    return {"needs_setup": not auth.has_users(), "setup_token_required": bool(config.setup_token())}
+
+
+def _check_password(password: str) -> None:
+    if len(password) < auth.MIN_PASSWORD:
+        raise HTTPException(422, f"Password needs at least {auth.MIN_PASSWORD} characters")
+
+
+def _import_database(upload: UploadFile) -> None:
+    """Replace the (empty) database with one from the local app, e.g. when moving to the server."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        shutil.copyfileobj(upload.file, tmp)
+        tmp_path = Path(tmp.name)
+    try:
+        try:
+            src = sqlite3.connect(f"file:{tmp_path}?mode=ro", uri=True)
+            tables = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            ok = src.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        except sqlite3.DatabaseError:
+            raise HTTPException(422, "That file isn't a FinanceAgent database (data/finance.db)")
+        if not ok or not {"accounts", "balances", "holdings"} <= tables:
+            src.close()
+            raise HTTPException(422, "That file isn't a FinanceAgent database (data/finance.db)")
+        if "users" in tables and src.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
+            src.close()
+            raise HTTPException(422, "That database already has logins; sign in with those instead")
+        dest = sqlite3.connect(db.db_path())
+        src.backup(dest)
+        dest.close()
+        src.close()
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    db.init()  # add tables and columns the older file doesn't have yet
+
+
+@app.post("/api/setup")
+def setup(request: Request, name: str = Form(..., min_length=1, max_length=60),
+          username: str = Form(..., min_length=2, max_length=40), password: str = Form(...),
+          setup_token: str = Form(""), import_db: Optional[UploadFile] = File(None)):
+    """Create the first login. Only possible while the app has no users."""
+    if auth.has_users():
+        raise HTTPException(409, "The app is already set up; sign in instead")
+    expected = config.setup_token()
+    if expected and not hmac.compare_digest(setup_token, expected):
+        auth.record_login_failure(request, "setup")
+        raise HTTPException(403, "Wrong setup token")
+    auth.check_login_allowed(request, "setup")
+    _check_password(password)
+    if import_db is not None and import_db.filename:
+        _import_database(import_db)
+    user = auth.create_user(name.strip(), username.strip(), password)
+    with db.connect() as conn:  # accounts made before there were logins belong to the first user
+        conn.execute("UPDATE accounts SET owner_id = ? WHERE owner_id IS NULL", (user["id"],))
+    response = JSONResponse({"user": user})
+    _set_session_cookie(response, request, auth.start_session(user["id"]))
+    return response
+
+
 class Login(BaseModel):
-    token: str
+    username: str = Field(max_length=40)
+    password: str = Field(max_length=200)
 
 
 @app.post("/api/login")
-def login(body: Login):
-    token = config.app_token()
-    if token and not hmac.compare_digest(body.token, token):
-        raise HTTPException(401, "wrong token")
-    resp = JSONResponse({"ok": True})
-    if token:
-        resp.set_cookie("fa_token", token, httponly=True, samesite="strict", max_age=365 * 86400)
-    return resp
+def login(body: Login, request: Request):
+    auth.check_login_allowed(request, body.username)
+    with db.connect() as conn:
+        user = db.row(conn, "SELECT * FROM users WHERE username = ?", body.username.strip())
+    if not user or not auth.verify_password(body.password, user["password_hash"]):
+        auth.record_login_failure(request, body.username)
+        raise HTTPException(401, "Wrong username or password")
+    response = JSONResponse({"user": auth.public_user(user)})
+    _set_session_cookie(response, request, auth.start_session(user["id"]))
+    return response
+
+
+@app.post("/api/logout")
+def logout(request: Request):
+    auth.end_session(request.cookies.get(auth.SESSION_COOKIE, ""))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(auth.SESSION_COOKIE)
+    return response
+
+
+@app.get("/api/me")
+def me(request: Request):
+    with db.connect() as conn:
+        users = db.rows(conn, "SELECT * FROM users ORDER BY id")
+    return {"user": auth.public_user(_user(request)), "family": [auth.public_user(u) for u in users]}
+
+
+class NewUser(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    username: str = Field(min_length=2, max_length=40)
+    password: str = Field(max_length=200)
+
+
+@app.post("/api/users")
+def add_family_member(body: NewUser):
+    """Any family member can add another one; they then sign in with this username and password."""
+    _check_password(body.password)
+    return auth.create_user(body.name.strip(), body.username.strip(), body.password)
+
+
+class PasswordChange(BaseModel):
+    current: str = Field(max_length=200)
+    new: str = Field(max_length=200)
+
+
+@app.post("/api/me/password")
+def change_password(body: PasswordChange, request: Request):
+    user = _user(request)
+    if not auth.verify_password(body.current, user["password_hash"]):
+        raise HTTPException(403, "Current password is wrong")
+    _check_password(body.new)
+    with db.connect() as conn:
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (auth.hash_password(body.new), user["id"]))
+    auth.end_other_sessions(user["id"], request.cookies.get(auth.SESSION_COOKIE, ""))
+    return {"ok": True}
+
+
+@app.post("/api/me/upload-token")
+def upload_token(request: Request):
+    """A new personal token for the iPhone Shortcut; it is shown once, and the old one stops working."""
+    return {"token": auth.new_upload_token(_user(request)["id"])}
+
+
+@app.get("/api/backup")
+def backup(background: BackgroundTasks):
+    """A consistent copy of the database (SQLite online backup), safe while the app runs."""
+    fd, name = tempfile.mkstemp(prefix="financeagent-", suffix=".db")
+    os.close(fd)
+    src, dest = sqlite3.connect(db.db_path()), sqlite3.connect(name)
+    src.backup(dest)
+    dest.close()
+    src.close()
+    background.add_task(os.unlink, name)
+    return FileResponse(name, media_type="application/vnd.sqlite3",
+                        filename=f"financeagent-{date.today().isoformat()}.db")
 
 
 # --- dashboard ---------------------------------------------------------------
 
+# owner: "all" (family), "joint", or a user id
 @app.get("/api/summary")
-def summary():
-    return valuation.summary()
+def summary(owner: str = "all"):
+    return valuation.summary(owner)
 
 
 @app.get("/api/history")
-def history():
-    return valuation.history()
+def history(owner: str = "all"):
+    return valuation.history(owner)
 
 
 @app.post("/api/refresh")
@@ -115,6 +280,7 @@ class AccountIn(BaseModel):
     kind: Kind
     currency: str = Field("CHF", pattern=r"^[A-Z]{3}$")
     valuation: Literal["balance", "holdings"] = "balance"
+    owner_id: Optional[int] = None  # a family member; None = joint account
 
 
 class AccountPatch(BaseModel):
@@ -124,6 +290,12 @@ class AccountPatch(BaseModel):
     currency: Optional[str] = Field(None, pattern=r"^[A-Z]{3}$")
     valuation: Optional[Literal["balance", "holdings"]] = None
     archived: Optional[bool] = None
+    owner_id: Optional[int] = None  # send null explicitly to make it a joint account
+
+
+def _check_owner(conn, owner_id: int | None) -> None:
+    if owner_id is not None and not db.row(conn, "SELECT 1 FROM users WHERE id = ?", owner_id):
+        raise HTTPException(422, "unknown family member")
 
 
 def _account(conn, account_id: int) -> dict:
@@ -142,18 +314,28 @@ def list_accounts():
 @app.post("/api/accounts")
 def create_account(body: AccountIn):
     with db.connect() as conn:
-        cur = conn.execute(
-            "INSERT INTO accounts (name, institution, kind, currency, valuation) VALUES (?, ?, ?, ?, ?)",
-            (body.name, body.institution, body.kind, body.currency, body.valuation),
-        )
-        return _account(conn, cur.lastrowid)
+        return _account(conn, _insert_account(conn, body))
+
+
+def _insert_account(conn, body: AccountIn) -> int:
+    _check_owner(conn, body.owner_id)
+    cur = conn.execute(
+        "INSERT INTO accounts (name, institution, kind, currency, valuation, owner_id) VALUES (?, ?, ?, ?, ?, ?)",
+        (body.name, body.institution, body.kind, body.currency, body.valuation, body.owner_id),
+    )
+    return cur.lastrowid
 
 
 @app.patch("/api/accounts/{account_id}")
 def update_account(account_id: int, body: AccountPatch):
-    changes = body.model_dump(exclude_none=True)
+    changes = body.model_dump(exclude_unset=True)
+    nullable = {"owner_id"}
+    if any(v is None for k, v in changes.items() if k not in nullable):
+        raise HTTPException(422, "only owner_id can be null")
     with db.connect() as conn:
         _account(conn, account_id)
+        if "owner_id" in changes:
+            _check_owner(conn, changes["owner_id"])
         for field, value in changes.items():
             conn.execute(f"UPDATE accounts SET {field} = ? WHERE id = ?", (value, account_id))
         return _account(conn, account_id)
@@ -256,9 +438,11 @@ def search_symbols(q: str):
 def _run_extraction(upload_id: int) -> None:
     with db.connect() as conn:
         up = db.row(conn, "SELECT * FROM uploads WHERE id = ?", upload_id)
-        accounts = db.rows(conn, "SELECT * FROM accounts WHERE archived = 0")
+        accounts = db.rows(conn, "SELECT a.*, COALESCE(u.name, 'joint') AS owner FROM accounts a "
+                                 "LEFT JOIN users u ON u.id = a.owner_id WHERE a.archived = 0")
+        uploader = db.row(conn, "SELECT name FROM users WHERE id = ?", up["user_id"]) if up["user_id"] else None
     try:
-        result = extract.extract(Path(up["path"]), up["media_type"], accounts)
+        result = extract.extract(Path(up["path"]), up["media_type"], accounts, uploader["name"] if uploader else None)
         status, payload, error = "pending", result.model_dump_json(), None
     except extract.ExtractError as e:
         status, payload, error = "failed", None, str(e)
@@ -278,7 +462,7 @@ def _media_type(file: UploadFile) -> str:
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile, background: BackgroundTasks):
+async def upload(file: UploadFile, background: BackgroundTasks, request: Request):
     """Accepts a screenshot, PDF statement or CSV (from the web page or the iPhone Shortcut); Claude reads it
     in the background and the result waits in the inbox for review."""
     data = await file.read()
@@ -292,8 +476,8 @@ async def upload(file: UploadFile, background: BackgroundTasks):
     stored.parent.mkdir(parents=True, exist_ok=True)
     stored.write_bytes(data)
     with db.connect() as conn:
-        cur = conn.execute("INSERT INTO uploads (filename, media_type, path, status) VALUES (?, ?, ?, 'reading')",
-                           (name, media_type, str(stored)))
+        cur = conn.execute("INSERT INTO uploads (filename, media_type, path, status, user_id) VALUES (?, ?, ?, 'reading', ?)",
+                           (name, media_type, str(stored), _user(request)["id"]))
         upload_id = cur.lastrowid
     background.add_task(_run_extraction, upload_id)
     return {"id": upload_id, "message": "Received. It will be in the FinanceAgent inbox in a few seconds."}
@@ -313,7 +497,9 @@ def _upload_out(u: dict) -> dict:
 def list_uploads(include_done: bool = False):
     with db.connect() as conn:
         where = "" if include_done else "WHERE status IN ('reading', 'pending', 'failed')"
-        return [_upload_out(u) for u in db.rows(conn, f"SELECT * FROM uploads {where} ORDER BY id DESC LIMIT 50")]
+        return [_upload_out(u) for u in db.rows(
+            conn, f"SELECT up.*, us.name AS uploaded_by FROM uploads up LEFT JOIN users us ON us.id = up.user_id "
+                  f"{where} ORDER BY up.id DESC LIMIT 50")]
 
 
 def _upload(conn, upload_id: int) -> dict:
@@ -398,11 +584,7 @@ def apply_upload(upload_id: int, body: ApplyIn):
     with db.connect() as conn:
         for n, item in enumerate(body.items):
             if item.new_account:
-                new = item.new_account
-                cur = conn.execute(
-                    "INSERT INTO accounts (name, institution, kind, currency, valuation) VALUES (?, ?, ?, ?, ?)",
-                    (new.name, new.institution, new.kind, new.currency, new.valuation))
-                account_id = cur.lastrowid
+                account_id = _insert_account(conn, item.new_account)
             else:
                 account_id = item.account_id
             if n in holdings_by_item:

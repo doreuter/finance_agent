@@ -61,8 +61,10 @@ An outstanding credit card amount is a negative balance.
 compute a balance by summing transactions, leave balance null and say so in notes instead.
 - Swiss and German documents write numbers like 1'234.50 or 1.234,50 - return plain numbers.
 - Only report what the document shows. Use null where something is not visible.
-- Set account_id from the user's accounts only when it is clearly the same account (same institution, \
-type and name or currency); give each account_id to at most one entry. Otherwise leave it null."""
+- Set account_id from the family's accounts only when it is clearly the same account (same institution, \
+type and name or currency); give each account_id to at most one entry. Otherwise leave it null. Several \
+family members can have accounts at the same bank: unless the document names the holder, prefer \
+accounts of the person who uploaded it, then joint accounts."""
 
 
 def content_blocks(path: Path, media_type: str) -> list[dict]:
@@ -84,12 +86,14 @@ def content_blocks(path: Path, media_type: str) -> list[dict]:
     raise ExtractError(f"Unsupported file type {media_type}. Use PNG/JPEG screenshots, PDF or CSV.")
 
 
-def extract(path: Path, media_type: str, accounts: list[dict], client: anthropic.Anthropic | None = None) -> Extraction:
+def extract(path: Path, media_type: str, accounts: list[dict], uploaded_by: str | None = None,
+            client: anthropic.Anthropic | None = None) -> Extraction:
     account_list = json.dumps(
         [{"id": a["id"], "name": a["name"], "institution": a["institution"], "kind": a["kind"],
-          "currency": a["currency"]} for a in accounts],
+          "currency": a["currency"], "owner": a.get("owner", "")} for a in accounts],
         ensure_ascii=False,
     )
+    who = f"This file was uploaded by {uploaded_by}. " if uploaded_by else ""
     if client is None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise ExtractError("Claude API key missing or invalid: set ANTHROPIC_API_KEY in .env")
@@ -102,7 +106,7 @@ def extract(path: Path, media_type: str, accounts: list[dict], client: anthropic
             messages=[{
                 "role": "user",
                 "content": content_blocks(path, media_type) + [
-                    {"type": "text", "text": f"The user's accounts: {account_list}\n\nExtract the value of each account in this file."},
+                    {"type": "text", "text": f"The family's accounts: {account_list}\n\n{who}Extract the value of each account in this file."},
                 ],
             }],
             output_format=Extraction,

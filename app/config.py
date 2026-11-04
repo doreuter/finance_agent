@@ -24,10 +24,10 @@ def base_currency() -> str:
     return os.environ.get("BASE_CURRENCY", "CHF").upper()
 
 
-def app_token() -> str:
-    """APP_TOKEN protects the app (web UI and the iPhone Shortcut upload). Empty = no protection,
-    fine while the app only listens on 127.0.0.1."""
-    return os.environ.get("APP_TOKEN", "")
+def setup_token() -> str:
+    """Needed to create the first login when set (always on a public server, so nobody else can
+    claim an empty app). Empty = no token, fine while the app only listens on 127.0.0.1."""
+    return os.environ.get("SETUP_TOKEN", "")
 
 
 def claude_model() -> str:

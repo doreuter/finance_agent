@@ -183,3 +183,21 @@ td.indent { padding-left: 14px; }
   .hero-number { font-size: 30px; }
   .hide-sm { display: none; }
 }
+
+/* person filter on the overview */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.chips button {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  border-radius: 999px; padding: 4px 12px; font-size: 14px;
+}
+.chips button.active { background: var(--text); border-color: var(--text); color: var(--bg); }
+.owner-tag {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--bg);
+  border: 1px solid var(--border); color: var(--text-2); font-size: 11px; vertical-align: 1px;
+}
+
+.plain-list { list-style: none; margin: 0 0 4px; padding: 0; }
+.plain-list li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+code { font-size: 13px; background: var(--bg); border-radius: 4px; padding: 1px 4px; }
+code.token { display: block; margin-top: 6px; padding: 8px; word-break: break-all; user-select: all; }
+.button-link { text-decoration: none; display: inline-block; }

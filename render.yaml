@@ -1,0 +1,27 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Create the service from this file in the Render dashboard (New → Blueprint), then fill in the
+# variables marked `sync: false` when Render asks for them.
+services:
+  - type: web
+    name: financeagent
+    region: frankfurt        # EU hosting for the family's financial data; a region can't be changed later
+    runtime: python
+    plan: starter            # a paid plan is needed for the persistent disk below
+    buildCommand: pip install -r requirements.txt
+    # --proxy-headers: Render terminates HTTPS in front of the app, so trust its forwarded headers
+    # (needed for secure cookies).
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /healthz
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: FINANCE_DB
+        value: /var/data/finance.db   # uploads are stored next to it, on the disk
+      - key: SETUP_TOKEN
+        generateValue: true  # copy it from the Environment tab to create the first login
+      - key: ANTHROPIC_API_KEY
+        sync: false          # paste a key made just for this app

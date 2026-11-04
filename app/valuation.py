@@ -84,10 +84,24 @@ def account_value(conn, account: dict, day: str | None = None) -> dict:
     return {"value": value, "value_base": value_base, "as_of": as_of, "problems": problems, "stale_days": stale}
 
 
-def summary() -> dict:
+def owner_filter(owner: str) -> tuple[str, list]:
+    """SQL condition on accounts `a` for the overview's person filter: all, joint, or a user id."""
+    if owner in ("", "all"):
+        return "", []
+    if owner == "joint":
+        return " AND a.owner_id IS NULL", []
+    try:
+        return " AND a.owner_id = ?", [int(owner)]
+    except ValueError:
+        return "", []
+
+
+def summary(owner: str = "all") -> dict:
     base = config.base_currency()
+    where, args = owner_filter(owner)
     with db.connect() as conn:
-        accounts = db.rows(conn, "SELECT * FROM accounts WHERE archived = 0 ORDER BY institution, kind, name")
+        accounts = db.rows(conn, "SELECT a.*, u.name AS owner_name FROM accounts a LEFT JOIN users u ON u.id = a.owner_id "
+                                 "WHERE a.archived = 0" + where + " ORDER BY a.institution, a.kind, a.name", *args)
         out = []
         for a in accounts:
             out.append({**a, **account_value(conn, a)})
@@ -118,14 +132,16 @@ def record_today() -> None:
             )
 
 
-def history() -> list[dict]:
+def history(owner: str = "all") -> list[dict]:
+    where, args = owner_filter(owner)
     with db.connect() as conn:
         return db.rows(
             conn,
             "SELECT d.day, SUM(d.value_base) AS total, "
             + ", ".join(f"SUM(CASE WHEN a.kind = '{k}' THEN d.value_base ELSE 0 END) AS {k}" for k in KINDS)
-            + " FROM daily_values d JOIN accounts a ON a.id = d.account_id WHERE a.archived = 0 "
-            "GROUP BY d.day ORDER BY d.day",
+            + " FROM daily_values d JOIN accounts a ON a.id = d.account_id WHERE a.archived = 0" + where
+            + " GROUP BY d.day ORDER BY d.day",
+            *args,
         )
 
 

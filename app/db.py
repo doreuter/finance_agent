@@ -1,4 +1,4 @@
-"""SQLite storage for accounts, balances, holdings, prices and uploaded statements."""
+"""SQLite storage for the family's users, accounts, balances, holdings, prices and uploaded statements."""
 
 from __future__ import annotations
 
@@ -10,6 +10,19 @@ from pathlib import Path
 from .config import ROOT
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (  -- family members; everyone sees the whole family's accounts
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    upload_token_hash TEXT,  -- sha256 of the personal token the iPhone Shortcut uploads with
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,  -- sha256 of the cookie value
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -77,11 +90,23 @@ def uploads_dir() -> Path:
     return db_path().parent / "uploads"
 
 
+# Columns added after the first release; init() adds them to an existing database.
+MIGRATIONS = {
+    "accounts": {"owner_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL"},  # NULL = joint
+    "uploads": {"user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL"},
+}
+
+
 def init() -> None:
     db_path().parent.mkdir(parents=True, exist_ok=True)
     uploads_dir().mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        for table, columns in MIGRATIONS.items():
+            have = {r["name"] for r in rows(conn, f"PRAGMA table_info({table})")}
+            for column, definition in columns.items():
+                if column not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 @contextmanager

@@ -10,7 +10,7 @@ const DEFAULT_ACCOUNTS = [
 ];
 
 const $ = (sel, root = document) => root.querySelector(sel);
-const state = { accounts: [], selected: null, uploads: [], pollTimer: null };
+const state = { accounts: [], selected: null, uploads: [], pollTimer: null, me: null, family: [], owner: "all" };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -41,6 +41,18 @@ function setBankOptions() {
     .map((b) => `<option value="${esc(b)}">`).join("");
 }
 
+function ownerName(ownerId) {
+  if (ownerId == null) return "Joint";
+  return state.family.find((u) => u.id === ownerId)?.name || "?";
+}
+
+function ownerOptions(selected) {
+  return state.family.map((u) => `<option value="${u.id}" ${u.id === selected ? "selected" : ""}>${esc(u.name)}</option>`).join("")
+    + `<option value="" ${selected == null ? "selected" : ""}>Joint</option>`;
+}
+
+const ownerValue = (v) => (v === "" ? null : Number(v));
+
 function toast(message) {
   const el = $("#toast");
   el.textContent = message;
@@ -70,28 +82,71 @@ async function api(path, options = {}) {
 
 // --- tabs & login --------------------------------------------------------------
 
+const SCREENS = ["#login", "#setup-first"];
+
 function showTab(name) {
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((t) => (t.hidden = t.id !== `tab-${name}`));
-  $("#login").hidden = true;
+  SCREENS.forEach((sel) => ($(sel).hidden = true));
+  $("nav").hidden = false;
   try { localStorage.setItem("fa-tab", name); } catch {}
   if (name === "overview") loadOverview();
   if (name === "accounts") loadAccounts();
   if (name === "inbox") loadUploads();
+  if (name === "family") loadFamily();
+}
+
+function showScreen(sel) {
+  document.querySelectorAll(".tab").forEach((t) => (t.hidden = true));
+  SCREENS.forEach((s) => ($(s).hidden = s !== sel));
+  $("nav").hidden = true;
 }
 
 function showLogin() {
-  document.querySelectorAll(".tab").forEach((t) => (t.hidden = true));
-  $("#login").hidden = false;
+  showScreen("#login");
+}
+
+async function loadMe() {
+  const r = await api("/api/me");
+  state.me = r.user;
+  state.family = r.family;
+  document.querySelectorAll(".owner-select").forEach((sel) => (sel.innerHTML = ownerOptions(state.me.id)));
+}
+
+async function enterApp() {
+  await loadMe();
+  let startTab = "overview";
+  try {
+    startTab = localStorage.getItem("fa-tab") || "overview";
+    state.owner = localStorage.getItem("fa-owner") || "all";
+  } catch {}
+  showTab(startTab);
 }
 
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
-    await api("/api/login", { method: "POST", body: { token: e.target.token.value } });
-    showTab("overview");
+    await api("/api/login", { method: "POST", body: { username: e.target.username.value, password: e.target.password.value } });
+    e.target.reset();
+    $("#login-error").textContent = "";
+    await enterApp();
   } catch (err) {
     $("#login-error").textContent = err.message;
+  }
+});
+
+$("#setup-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.submitter;
+  btn.disabled = true;
+  try {
+    const form = new FormData(e.target);
+    if (!e.target.import_db.files.length) form.delete("import_db");
+    await api("/api/setup", { method: "POST", body: form });
+    await enterApp();
+  } catch (err) {
+    $("#setup-error").textContent = err.message;
+    btn.disabled = false;
   }
 });
 
@@ -99,8 +154,27 @@ document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click
 
 // --- overview --------------------------------------------------------------------
 
+function renderOwnerFilter() {
+  const options = [["all", "Family"], ...state.family.map((u) => [String(u.id), u.name]), ["joint", "Joint"]];
+  if (!options.some(([v]) => v === state.owner)) state.owner = "all";
+  $("#owner-filter").innerHTML = options.map(([v, label]) =>
+    `<button class="${v === state.owner ? "active" : ""}" data-owner="${esc(v)}" aria-pressed="${v === state.owner}">${esc(label)}</button>`).join("");
+  $("#total-label").textContent = state.owner === "all" ? "Family net worth"
+    : state.owner === "joint" ? "Joint accounts" : `Net worth · ${options.find(([v]) => v === state.owner)[1]}`;
+}
+
+$("#owner-filter").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-owner]");
+  if (!b) return;
+  state.owner = b.dataset.owner;
+  try { localStorage.setItem("fa-owner", state.owner); } catch {}
+  loadOverview();
+});
+
 async function loadOverview() {
-  const [summary, history] = await Promise.all([api("/api/summary"), api("/api/history")]);
+  renderOwnerFilter();
+  const q = `?owner=${encodeURIComponent(state.owner)}`;
+  const [summary, history] = await Promise.all([api("/api/summary" + q), api("/api/history" + q)]);
   const cur = summary.base_currency;
   $("#total").textContent = money(summary.total, cur);
   const sub = [];
@@ -201,11 +275,15 @@ function accountWarnings(a) {
 function renderAccountsTable(summary) {
   const box = $("#accounts-table");
   if (!summary.accounts.length) {
-    box.innerHTML = `<div class="empty">No accounts yet. <button class="link" onclick="showTab('accounts')">Set them up</button></div>`;
+    box.innerHTML = state.owner === "all"
+      ? `<div class="empty">No accounts yet. <button class="link" data-goto="accounts">Set them up</button></div>`
+      : `<div class="empty">No accounts for this filter.</div>`;
+    $("[data-goto]", box)?.addEventListener("click", () => showTab("accounts"));
     return;
   }
   const row = (a) => `<tr>
-      <td class="indent"><span class="kind-dot" style="background:var(--kind-${a.kind})"></span>${esc(a.name)}${accountWarnings(a)}</td>
+      <td class="indent"><span class="kind-dot" style="background:var(--kind-${a.kind})"></span>${esc(a.name)}
+        ${state.owner === "all" ? `<span class="owner-tag">${esc(ownerName(a.owner_id))}</span>` : ""}${accountWarnings(a)}</td>
       <td class="hide-sm">${esc(KIND_LABELS[a.kind])}</td>
       <td class="num">${esc(money(a.value, a.currency))}</td>
       <td class="num">${esc(money(a.value_base, null))}</td>
@@ -257,7 +335,7 @@ async function loadAccounts() {
     <li class="bank-head"><span>${esc(bank)}</span><button class="link small" data-add-to="${esc(bank)}">+ Account</button></li>
     ${list.map((a) => `<li><button data-id="${a.id}" class="${a.id === state.selected ? "active" : ""}">
       <span class="kind-dot" style="background:var(--kind-${a.kind})"></span>${esc(a.name)}
-      <span class="sub">${esc(a.currency)}</span></button></li>`).join("")}`).join("");
+      <span class="sub">${esc(ownerName(a.owner_id))} · ${esc(a.currency)}</span></button></li>`).join("")}`).join("");
   document.querySelectorAll("#account-list [data-id]").forEach((b) =>
     b.addEventListener("click", () => selectAccount(Number(b.dataset.id))));
   document.querySelectorAll("#account-list [data-add-to]").forEach((b) => b.addEventListener("click", () => {
@@ -282,11 +360,12 @@ async function renderAccountDetail() {
   const today = new Date().toISOString().slice(0, 10);
   box.innerHTML = `
     <div class="upload-head"><h2>${esc(a.name)}</h2>
-      <span class="muted small">${esc(a.institution)} · ${esc(KIND_LABELS[a.kind])} · ${esc(a.currency)}</span></div>
+      <span class="muted small">${esc(a.institution)} · ${esc(KIND_LABELS[a.kind])} · ${esc(a.currency)} · ${esc(ownerName(a.owner_id))}</span></div>
     <form id="edit-account" class="form-grid">
       <label>Name <input name="name" value="${esc(a.name)}" required></label>
       <label>Bank <input name="institution" value="${esc(a.institution)}" list="bank-options" required></label>
       <label>Currency <input name="currency" value="${esc(a.currency)}" pattern="[A-Z]{3}" maxlength="3" required></label>
+      <label>Belongs to <select name="owner_id">${ownerOptions(a.owner_id)}</select></label>
       <label>Value from
         <select name="valuation">
           <option value="balance" ${a.valuation === "balance" ? "selected" : ""}>Balance I enter or import</option>
@@ -300,7 +379,8 @@ async function renderAccountDetail() {
     e.preventDefault();
     const f = e.target;
     await api(`/api/accounts/${a.id}`, { method: "PATCH", body: {
-      name: f.name.value, institution: f.institution.value, currency: f.currency.value.toUpperCase(), valuation: f.valuation.value } });
+      name: f.name.value, institution: f.institution.value, currency: f.currency.value.toUpperCase(), valuation: f.valuation.value,
+      owner_id: ownerValue(f.owner_id.value) } });
     toast("Saved");
     loadAccounts();
   });
@@ -413,15 +493,16 @@ $("#account-form").addEventListener("submit", async (e) => {
   const f = e.target;
   const created = await api("/api/accounts", { method: "POST", body: {
     name: f.name.value, institution: f.institution.value, kind: f.kind.value,
-    currency: f.currency.value.toUpperCase(), valuation: f.valuation.value } });
+    currency: f.currency.value.toUpperCase(), valuation: f.valuation.value, owner_id: ownerValue(f.owner_id.value) } });
   f.reset();
+  f.owner_id.innerHTML = ownerOptions(state.me.id);
   state.selected = created.id;
   loadAccounts();
 });
 
 $("#setup-defaults").addEventListener("click", async (e) => {
   e.target.disabled = true;
-  for (const a of DEFAULT_ACCOUNTS) await api("/api/accounts", { method: "POST", body: a });
+  for (const a of DEFAULT_ACCOUNTS) await api("/api/accounts", { method: "POST", body: { ...a, owner_id: state.me.id } });
   toast("Accounts created. Add a balance or positions to each.");
   loadAccounts();
 });
@@ -470,7 +551,7 @@ async function loadUploads() {
 
 function accountOptions(selectedId) {
   return groupByBank(state.accounts).map(([bank, list]) => `<optgroup label="${esc(bank)}">${list.map((a) =>
-    `<option value="${a.id}" ${a.id === selectedId ? "selected" : ""}>${esc(a.name)} (${esc(a.currency)})</option>`).join("")}</optgroup>`).join("");
+    `<option value="${a.id}" ${a.id === selectedId ? "selected" : ""}>${esc(a.name)} · ${esc(ownerName(a.owner_id))} (${esc(a.currency)})</option>`).join("")}</optgroup>`).join("");
 }
 
 function foundBlock(f, i, bank) {
@@ -500,7 +581,7 @@ function foundBlock(f, i, bank) {
 
 function uploadCard(u) {
   const head = `<div class="upload-head"><h2>${esc(u.filename)}</h2>
-    <a class="small" href="/api/uploads/${u.id}/file" target="_blank" rel="noopener">View file</a></div>`;
+    <span class="small">${u.uploaded_by ? `<span class="muted">from ${esc(u.uploaded_by)} · </span>` : ""}<a href="/api/uploads/${u.id}/file" target="_blank" rel="noopener">View file</a></span></div>`;
   if (u.status === "reading") return `<div class="card">${head}<p class="muted">Reading…</p></div>`;
   if (u.status === "failed") return `<div class="card" data-upload="${u.id}">${head}<p class="error">${esc(u.error)}</p>
     <div class="actions"><button class="ghost" data-act="retry">Try again</button><button class="link" data-act="dismiss">Dismiss</button></div></div>`;
@@ -511,6 +592,7 @@ function uploadCard(u) {
     <div class="row">
       <label>Bank <input name="institution" value="${esc(x.institution || "")}" list="bank-options" maxlength="80"></label>
       <label>Date <input type="date" name="as_of" value="${esc(x.as_of || new Date().toISOString().slice(0, 10))}"></label>
+      <label>New accounts belong to <select name="owner_id">${ownerOptions(u.user_id ?? state.me.id)}</select></label>
     </div>
     ${found.length ? found.map((f, i) => foundBlock(f, i, x.institution)).join("") : `<p class="muted">No account values found in this file.</p>`}
     <div class="actions">${found.length ? `<button class="primary" data-act="apply">Save ${found.length > 1 ? "selected" : "to account"}</button>` : ""}
@@ -559,7 +641,8 @@ function wireUpload(u) {
             if (!bank) throw new Error("Enter the bank for the new account");
             const hasQuantities = item.positions.some((p) => p.quantity);
             item.new_account = { name: $("[name=new_name]", block).value.trim() || f.name || bank, institution: bank,
-              kind: f.kind || "cash", currency: (f.currency || "CHF").toUpperCase(), valuation: hasQuantities ? "holdings" : "balance" };
+              kind: f.kind || "cash", currency: (f.currency || "CHF").toUpperCase(), valuation: hasQuantities ? "holdings" : "balance",
+              owner_id: ownerValue($("[name=owner_id]", card).value) };
             item.replace_holdings = hasQuantities;
           } else {
             item.account_id = Number($("[name=target]", block).value);
@@ -581,8 +664,68 @@ function wireUpload(u) {
   });
 }
 
+// --- family -------------------------------------------------------------------------
+
+async function loadFamily() {
+  await loadMe();
+  $("#family-list").innerHTML = state.family.map((u) =>
+    `<li><strong>${esc(u.name)}</strong> <span class="muted small">${esc(u.username)}${u.id === state.me.id ? " · you" : ""}
+      ${u.has_upload_token ? " · Shortcut set up" : ""}</span></li>`).join("");
+  $("#upload-url").textContent = `${location.origin}/api/upload`;
+  $("#new-upload-token").textContent = state.me.has_upload_token ? "Replace my upload token" : "Create my upload token";
+}
+
+$("#member-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api("/api/users", { method: "POST", body: { name: f.name.value, username: f.username.value, password: f.password.value } });
+    toast(`${f.name.value} can sign in now`);
+    f.reset();
+    loadFamily();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+$("#new-upload-token").addEventListener("click", async () => {
+  if (state.me.has_upload_token && !confirm("Your current Shortcut stops working until you put the new token in. Continue?")) return;
+  const r = await api("/api/me/upload-token", { method: "POST" });
+  const out = $("#upload-token-out");
+  out.hidden = false;
+  out.innerHTML = `Your token (shown only now; copy it into the Shortcut): <code class="token">${esc(r.token)}</code>`;
+  loadFamily();
+});
+
+$("#password-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/me/password", { method: "POST", body: { current: e.target.current.value, new: e.target.new.value } });
+    e.target.reset();
+    toast("Password changed; other devices are signed out");
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+$("#logout").addEventListener("click", async () => {
+  await api("/api/logout", { method: "POST" });
+  showLogin();
+});
+
 // --- start -------------------------------------------------------------------------
 
-let startTab = "overview";
-try { startTab = localStorage.getItem("fa-tab") || "overview"; } catch {}
-showTab(startTab);
+(async () => {
+  const status = await api("/api/status");
+  if (status.needs_setup) {
+    $("#setup-token-field").hidden = !status.setup_token_required;
+    $("#setup-form").setup_token.required = status.setup_token_required;
+    showScreen("#setup-first");
+    return;
+  }
+  try {
+    await enterApp();
+  } catch {
+    showLogin();
+  }
+})();

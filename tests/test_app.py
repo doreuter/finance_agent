@@ -3,7 +3,7 @@ from datetime import date, timedelta
 import pytest
 
 from app import extract, prices
-from tests.conftest import store_price
+from tests.conftest import PASSWORD, store_price
 
 TODAY = date.today().isoformat()
 
@@ -91,9 +91,10 @@ def test_upload_extract_and_apply(client, monkeypatch):
     viac = make_account(client, name="VIAC 3a", institution="VIAC", kind="pillar3a")
     seen = {}
 
-    def fake_extract(path, media_type, accounts):
+    def fake_extract(path, media_type, accounts, uploaded_by=None):
         seen["media_type"] = media_type
-        seen["accounts"] = [a["name"] for a in accounts]
+        seen["accounts"] = [(a["name"], a["owner"]) for a in accounts]
+        seen["uploaded_by"] = uploaded_by
         return extract.Extraction(institution="VIAC", as_of=TODAY, notes="VIAC portfolio overview", accounts=[
             extract.FoundAccount(account_id=viac["id"], name="Portfolio 1", kind="pillar3a", balance=23456.7, currency="CHF")])
 
@@ -101,7 +102,7 @@ def test_upload_extract_and_apply(client, monkeypatch):
     r = client.post("/api/upload", files={"file": ("IMG_0001.PNG", b"\x89PNG fake", "image/png")})
     assert r.status_code == 200
     upload_id = r.json()["id"]
-    assert seen == {"media_type": "image/png", "accounts": ["VIAC 3a"]}
+    assert seen == {"media_type": "image/png", "accounts": [("VIAC 3a", "joint")], "uploaded_by": "Dominik"}
 
     pending = client.get("/api/uploads").json()
     assert pending[0]["status"] == "pending"
@@ -165,7 +166,7 @@ def test_apply_positions_looks_up_tickers_by_isin(client, monkeypatch):
 
 
 def test_failed_extraction_is_kept_for_retry(client, monkeypatch):
-    def boom(path, media_type, accounts):
+    def boom(path, media_type, accounts, uploaded_by=None):
         raise extract.ExtractError("Claude API key missing or invalid: set ANTHROPIC_API_KEY in .env")
     monkeypatch.setattr(extract, "extract", boom)
     client.post("/api/upload", files={"file": ("s.pdf", b"%PDF-1.4", "application/pdf")})
@@ -185,10 +186,109 @@ def test_content_blocks_by_type(tmp_path):
         extract.content_blocks(png, "image/heic")
 
 
-def test_token_protects_api(client, monkeypatch):
-    monkeypatch.setenv("APP_TOKEN", "s3cret")
-    assert client.get("/api/summary").status_code == 401
-    assert client.get("/api/summary", headers={"Authorization": "Bearer s3cret"}).status_code == 200
-    assert client.post("/api/login", json={"token": "nope"}).status_code == 401
-    assert client.post("/api/login", json={"token": "s3cret"}).status_code == 200
-    assert client.get("/api/summary").status_code == 200  # cookie set by login
+def test_api_needs_login(anon):
+    assert anon.get("/api/status").json()["needs_setup"] is True
+    assert anon.get("/api/summary").status_code == 401
+    anon.post("/api/setup", data={"name": "Dominik", "username": "dominik", "password": PASSWORD})
+    assert anon.get("/api/summary").status_code == 200  # session cookie from setup
+    anon.post("/api/logout")
+    assert anon.get("/api/summary").status_code == 401
+    assert anon.post("/api/login", json={"username": "dominik", "password": "wrong password"}).status_code == 401
+    assert anon.post("/api/login", json={"username": "Dominik", "password": PASSWORD}).status_code == 200
+    assert anon.get("/api/summary").status_code == 200
+
+
+def test_setup_only_once_and_needs_token_when_set(anon, monkeypatch):
+    monkeypatch.setenv("SETUP_TOKEN", "server-secret")
+    form = {"name": "Dominik", "username": "dominik", "password": PASSWORD}
+    assert anon.post("/api/setup", data={**form, "setup_token": "guess"}).status_code == 403
+    assert anon.post("/api/setup", data={**form, "password": "short", "setup_token": "server-secret"}).status_code == 422
+    assert anon.post("/api/setup", data={**form, "setup_token": "server-secret"}).status_code == 200
+    assert anon.post("/api/setup", data={**form, "username": "other", "setup_token": "server-secret"}).status_code == 409
+
+
+def test_login_is_rate_limited(client):
+    client.post("/api/logout")
+    for _ in range(5):
+        assert client.post("/api/login", json={"username": "dominik", "password": "nope nope nope"}).status_code == 401
+    assert client.post("/api/login", json={"username": "dominik", "password": PASSWORD}).status_code == 429
+
+
+def test_upload_token_only_works_for_uploads(client):
+    token = client.post("/api/me/upload-token").json()["token"]
+    client.post("/api/logout")
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/api/summary", headers=headers).status_code == 401
+    r = client.post("/api/upload", headers=headers, files={"file": ("s.png", b"\x89PNG", "image/png")})
+    assert r.status_code == 200
+    assert client.post("/api/upload", headers={"Authorization": "Bearer fa_wrong"},
+                       files={"file": ("s.png", b"\x89PNG", "image/png")}).status_code == 401
+
+
+def test_family_member_and_owner_filter(client):
+    wife = client.post("/api/users", json={"name": "Anna", "username": "anna", "password": PASSWORD}).json()
+    mine = make_account(client, owner_id=client.user["id"])
+    hers = make_account(client, owner_id=wife["id"])
+    joint = make_account(client, name="Haushalt", owner_id=None)
+    for acc, amount in ((mine, 100), (hers, 200), (joint, 50)):
+        client.post(f"/api/accounts/{acc['id']}/balances", json={"day": TODAY, "amount": amount})
+    total = lambda owner: client.get(f"/api/summary?owner={owner}").json()["total"]
+    assert total("all") == 350 and total(client.user["id"]) == 100 and total(wife["id"]) == 200 and total("joint") == 50
+    assert client.get(f"/api/history?owner={wife['id']}").json()[0]["total"] == 200
+    # make her account joint, then back
+    assert client.patch(f"/api/accounts/{hers['id']}", json={"owner_id": None}).json()["owner_id"] is None
+    assert total("joint") == 250
+    assert client.patch(f"/api/accounts/{hers['id']}", json={"owner_id": 999}).status_code == 422
+    # she can sign in and sees everything
+    client.post("/api/logout")
+    client.post("/api/login", json={"username": "anna", "password": PASSWORD})
+    assert total("all") == 350
+
+
+def test_password_change_signs_out_other_sessions(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    other = TestClient(app)
+    other.post("/api/login", json={"username": "dominik", "password": PASSWORD})
+    assert other.get("/api/summary").status_code == 200
+    r = client.post("/api/me/password", json={"current": PASSWORD, "new": "a brand new password"})
+    assert r.status_code == 200
+    assert other.get("/api/summary").status_code == 401
+    assert client.get("/api/summary").status_code == 200
+
+
+def test_setup_imports_local_database(anon, tmp_path):
+    import sqlite3
+    local = tmp_path / "local.db"
+    conn = sqlite3.connect(local)  # what the local app wrote before there were logins
+    conn.executescript("""
+        CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL, institution TEXT NOT NULL, kind TEXT NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'CHF', valuation TEXT NOT NULL DEFAULT 'balance', archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT);
+        CREATE TABLE balances (id INTEGER PRIMARY KEY, account_id INTEGER, day TEXT, amount REAL, source TEXT, note TEXT, created_at TEXT);
+        CREATE TABLE holdings (id INTEGER PRIMARY KEY, account_id INTEGER, name TEXT, symbol TEXT, isin TEXT, quantity REAL,
+            manual_price REAL, currency TEXT, updated_at TEXT);
+        INSERT INTO accounts (name, institution, kind) VALUES ('Main account', 'Neon', 'cash');
+    """)
+    conn.execute("INSERT INTO balances (account_id, day, amount, source) VALUES (1, ?, 4321, 'manual')", (TODAY,))
+    conn.commit()
+    conn.close()
+    with open(local, "rb") as f:
+        r = anon.post("/api/setup", data={"name": "Dominik", "username": "dominik", "password": PASSWORD},
+                      files={"import_db": ("finance.db", f, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    s = anon.get("/api/summary").json()
+    assert s["total"] == 4321 and s["accounts"][0]["owner_id"] == r.json()["user"]["id"]
+    assert anon.get("/api/backup").content[:16] == b"SQLite format 3\x00"
+
+
+def test_setup_rejects_other_files(anon):
+    r = anon.post("/api/setup", data={"name": "D", "username": "dominik", "password": PASSWORD},
+                  files={"import_db": ("finance.db", b"not a database at all", "application/octet-stream")})
+    assert r.status_code == 422
+    assert anon.get("/api/status").json()["needs_setup"] is True
+
+
+def test_security_headers(client):
+    r = client.get("/")
+    assert r.headers["x-frame-options"] == "DENY" and "default-src 'self'" in r.headers["content-security-policy"]
