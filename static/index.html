@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FinanceAgent</title>
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
   <header class="top">
@@ -13,6 +13,7 @@
       <button data-tab="overview" class="active">Overview</button>
       <button data-tab="accounts">Accounts</button>
       <button data-tab="insights">Insights <span id="tasks-count" class="badge" hidden></span></button>
+      <button data-tab="ask">Ask</button>
       <button data-tab="inbox">Inbox <span id="inbox-count" class="badge" hidden></span></button>
       <button data-tab="family">Family</button>
     </nav>
@@ -133,14 +134,39 @@
         <div id="tasks"></div>
       </div>
       <div class="card">
+        <h2>Monthly savings</h2>
+        <div id="savings"></div>
+      </div>
+      <div class="card">
         <div class="upload-head"><h2>Pillar 2 &amp; 3a</h2><button class="link small" data-goto="family">Edit profiles</button></div>
         <div id="pension"></div>
+      </div>
+      <div class="card">
+        <div class="upload-head"><h2>Taxes</h2>
+          <label class="inline-label">Tax year <select id="tax-year"></select></label></div>
+        <div id="tax"></div>
+        <h4 class="sub-head">Estimate and ways to save</h4>
+        <div id="tax-estimate"></div>
       </div>
       <div class="card">
         <div class="upload-head"><h2>Weekly briefing</h2><button id="write-briefing" class="ghost">Write now</button></div>
         <p class="disclaimer small">Written by Claude from current news and your portfolio, every Monday. It is information to
           support your own decisions, not financial advice: check it before acting, and consider a licensed advisor for larger steps.</p>
         <div id="briefing"></div>
+      </div>
+    </section>
+
+    <section id="tab-ask" class="tab" hidden>
+      <div class="card chat-card">
+        <div class="upload-head"><h2>Ask FinanceAgent</h2><button id="chat-new" class="link small">New conversation</button></div>
+        <p class="muted small">Questions about your accounts, ETF savings, pillar 2 and 3a, and taxes. Claude knows your data and
+          looks up current rules on the web. Information for your own decisions, not financial or tax advice.</p>
+        <div id="chat-log" class="chat-log" aria-live="polite"></div>
+        <div id="chat-suggestions" class="chips"></div>
+        <form id="chat-form" class="chat-form">
+          <textarea name="q" rows="2" maxlength="4000" placeholder="e.g. How much can I still pay into pillar 3a this year?" required></textarea>
+          <button class="primary">Ask</button>
+        </form>
       </div>
     </section>
 
@@ -215,6 +241,6 @@
   <datalist id="bank-options"></datalist>
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>

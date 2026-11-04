@@ -1,5 +1,7 @@
 "use strict";
 
+const CANTONS = ["AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR", "JU", "LU", "NE", "NW", "OW", "SG", "SH", "SO",
+  "SZ", "TG", "TI", "UR", "VD", "VS", "ZG", "ZH"];
 const KIND_LABELS = { cash: "Cash", depot: "Investments", pillar3a: "Pillar 3a", pillar2: "Pillar 2" };
 const DEFAULT_ACCOUNTS = [
   { name: "Main account", institution: "Neon", kind: "cash", currency: "CHF", valuation: "balance" },
@@ -102,6 +104,7 @@ function showTab(name) {
   if (name === "inbox") loadUploads();
   if (name === "family") loadFamily();
   if (name === "insights") loadInsights();
+  if (name === "ask") loadChat();
 }
 
 document.addEventListener("click", (e) => {
@@ -537,6 +540,8 @@ async function renderAccountDetail() {
       <label>Bank <input name="institution" value="${esc(a.institution)}" list="bank-options" required></label>
       <label>Currency <input name="currency" value="${esc(a.currency)}" pattern="[A-Z]{3}" maxlength="3" required></label>
       <label>Belongs to <select name="owner_id">${ownerOptions(a.owner_id)}</select></label>
+      <label>Bank's country <input name="country" value="${esc(a.country || "CH")}" pattern="[A-Za-z]{2}" maxlength="2"
+        title="Two letters, e.g. CH or DE; foreign accounts are declared separately in the tax return" required></label>
       <label>Value from
         <select name="valuation">
           <option value="balance" ${a.valuation === "balance" ? "selected" : ""}>Balance I enter or import</option>
@@ -551,7 +556,7 @@ async function renderAccountDetail() {
     const f = e.target;
     await api(`/api/accounts/${a.id}`, { method: "PATCH", body: {
       name: f.name.value, institution: f.institution.value, currency: f.currency.value.toUpperCase(), valuation: f.valuation.value,
-      owner_id: ownerValue(f.owner_id.value) } });
+      owner_id: ownerValue(f.owner_id.value), country: f.country.value.toUpperCase() } });
     toast("Saved");
     loadAccounts();
   });
@@ -563,7 +568,8 @@ async function renderAccountDetail() {
   });
   if (a.valuation === "holdings") renderHoldings(a);
   else renderBalances(a, today);
-  if (a.kind === "pillar3a") renderContributions(a, today);
+  if (a.kind === "pillar3a" || a.kind === "pillar2") renderContributions(a, today);
+  if (a.kind === "depot") renderPlans(a);
 }
 
 async function renderBalances(a, today) {
@@ -593,6 +599,48 @@ async function renderBalances(a, today) {
   }));
 }
 
+const FREQUENCIES = { monthly: "Monthly", quarterly: "Quarterly", yearly: "Yearly" };
+
+function planRow(p = {}) {
+  return `<tr>
+    <td><input name="name" value="${esc(p.name)}" placeholder="Xtrackers MSCI World" required maxlength="120"></td>
+    <td><input name="symbol" value="${esc(p.symbol)}" placeholder="optional" maxlength="30"></td>
+    <td><input name="amount" type="number" step="any" min="0.01" value="${p.amount ?? ""}" required></td>
+    <td><input name="currency" value="${esc(p.currency || "CHF")}" maxlength="3" style="width:64px"></td>
+    <td><select name="frequency">${Object.entries(FREQUENCIES).map(([v, l]) => `<option value="${v}" ${p.frequency === v ? "selected" : ""}>${l}</option>`).join("")}</select></td>
+    <td><input name="day" type="number" min="1" max="31" value="${p.day ?? ""}" placeholder="day" style="width:64px"></td>
+    <td><button type="button" class="link danger" data-remove>✕</button></td></tr>`;
+}
+
+async function renderPlans(a) {
+  const plans = await api(`/api/accounts/${a.id}/savings-plans`);
+  $("#detail-body").insertAdjacentHTML("afterend", `<div id="plans" style="margin-top:20px">
+    <h2>Savings plans</h2>
+    <p class="muted small">What this depot buys regularly. A screenshot of the savings plans screen in the Inbox fills this in.</p>
+    <form id="plans-form"><div class="table-wrap"><table class="holdings-editor">
+      <thead><tr><th>Fund</th><th>Ticker</th><th>Amount</th><th>Cur.</th><th>Every</th><th>Day</th><th></th></tr></thead>
+      <tbody>${plans.map(planRow).join("")}</tbody></table></div>
+      <div class="actions"><button type="button" id="add-plan" class="ghost">Add plan</button><button class="primary">Save plans</button></div>
+    </form></div>`);
+  const tbody = $("#plans-form tbody");
+  $("#add-plan").addEventListener("click", () => tbody.insertAdjacentHTML("beforeend", planRow()));
+  tbody.addEventListener("click", (e) => { if (e.target.matches("[data-remove]")) e.target.closest("tr").remove(); });
+  $("#plans-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = [...tbody.querySelectorAll("tr")].map((tr) => {
+      const v = (n) => tr.querySelector(`[name=${n}]`).value.trim();
+      return { name: v("name"), symbol: v("symbol") || null, amount: Number(v("amount")), currency: (v("currency") || "CHF").toUpperCase(),
+        frequency: v("frequency"), day: v("day") ? Number(v("day")) : null };
+    });
+    try {
+      await api(`/api/accounts/${a.id}/savings-plans`, { method: "PUT", body });
+      toast("Savings plans saved");
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+}
+
 async function renderContributions(a, today) {
   const list = await api(`/api/accounts/${a.id}/contributions`);
   let box = $("#contributions");
@@ -600,8 +648,10 @@ async function renderContributions(a, today) {
     $("#detail-body").insertAdjacentHTML("afterend", `<div id="contributions" style="margin-top:20px"></div>`);
     box = $("#contributions");
   }
-  box.innerHTML = `<h2>Payments into this 3a account</h2>
-    <p class="muted small">Used for the 3a reminders (how much is left this year). A statement upload can fill in the year's total.</p>
+  box.innerHTML = a.kind === "pillar2" ? `<h2>Buy-ins into this pension fund</h2>
+    <p class="muted small">Voluntary buy-ins are deducted from taxable income; they appear in the tax list for the year.</p>` : `<h2>Payments into this 3a account</h2>
+    <p class="muted small">Used for the 3a reminders (how much is left this year). A statement upload can fill in the year's total.</p>`;
+  box.innerHTML += `
     <form id="contribution-form" class="row">
       <label>Date <input type="date" name="day" value="${today}" required></label>
       <label>Amount (CHF) <input type="number" step="0.01" min="0.01" name="amount" required></label>
@@ -775,6 +825,12 @@ function foundBlock(f, i, bank) {
       ${f.contributions_ytd != null ? `<label>Paid in this year (CHF) <input type="number" step="0.01" name="contributions_ytd" value="${f.contributions_ytd}"></label>` : ""}
       ${f.pillar2_buyin != null ? `<label>Buy-in potential (CHF) <input type="number" step="1" name="pillar2_buyin" value="${f.pillar2_buyin}"></label>` : ""}
     </div>
+    ${(f.savings_plans || []).length ? `<div class="plans-review">
+      <div class="table-wrap"><table><thead><tr><th>Savings plan</th><th class="num">Amount</th><th>Every</th></tr></thead>
+      <tbody>${f.savings_plans.map((p) => `<tr><td>${esc(p.name)}${p.symbol ? ` <span class="muted small">${esc(p.symbol)}</span>` : ""}</td>
+        <td class="num">${esc(money(p.amount, p.currency, 2))}</td><td>${esc(FREQUENCIES[p.frequency] || p.frequency)}${p.day ? `, day ${p.day}` : ""}</td></tr>`).join("")}
+      </tbody></table></div>
+      <label class="check"><input type="checkbox" name="save_plans" checked> Save these as this account's savings plans (replaces the ones there)</label></div>` : ""}
     ${positions.length ? `<div class="positions-review">
       <div class="table-wrap"><table class="review">
       <thead><tr><th></th><th>Position</th><th>Ticker</th><th class="num">Quantity</th><th class="num hide-sm">Price</th><th class="num">Value</th>
@@ -911,6 +967,10 @@ function wireUpload(u) {
           const f = found[Number(block.dataset.found)];
           const bal = $("[name=balance]", block).value;
           const item = { balance: bal === "" ? null : Number(bal), positions: reviewedPositions(block, f), replace_holdings: false };
+          if (f.savings_plans?.length && $("[name=save_plans]", block)?.checked) {
+            item.savings_plans = f.savings_plans.map((p) => ({ name: p.name, symbol: p.symbol, isin: p.isin, amount: p.amount,
+              currency: (p.currency || "CHF").toUpperCase(), frequency: p.frequency, day: p.day }));
+          }
           for (const field of ["contributions_ytd", "pillar2_buyin"]) {
             const v = $(`[name=${field}]`, block)?.value;
             if (v) item[field] = Number(v);
@@ -947,7 +1007,7 @@ function wireUpload(u) {
 
 // --- insights: tasks, pillar 2/3a, weekly briefing ------------------------------------
 
-const CATEGORY_LABELS = { pillar3a: "Pillar 3a", pillar2: "Pillar 2", portfolio: "Portfolio" };
+const CATEGORY_LABELS = { pillar3a: "Pillar 3a", pillar2: "Pillar 2", portfolio: "Portfolio", tax: "Tax" };
 const STANCE_LABELS = { buy: "Buy", hold: "Hold", reduce: "Reduce", watch: "Watch" };
 
 async function updateTasksBadge() {
@@ -959,7 +1019,7 @@ async function updateTasksBadge() {
 }
 
 async function loadInsights() {
-  const [tasks] = await Promise.all([updateTasksBadge(), loadPension(), loadBriefing()]);
+  const [tasks] = await Promise.all([updateTasksBadge(), loadSavings(), loadPension(), loadTax(), loadTaxEstimate(), loadBriefing()]);
   renderTasks(tasks);
 }
 
@@ -996,6 +1056,165 @@ $("#tasks").addEventListener("change", (e) => {
   if (sel?.value) taskAction(sel.closest("[data-task]").dataset.task, { action: "snooze", days: Number(sel.value) })
     .then(() => toast("Snoozed")).catch((err) => toast(err.message));
 });
+
+// Savings: scenario lines are one hue, light to dark (cautious -> optimistic); paid in is a neutral dashed line.
+const SCENARIO_LABELS = { cautious: "Cautious", middle: "Middle", optimistic: "Optimistic" };
+
+async function loadSavings() {
+  const s = await api("/api/savings");
+  const box = $("#savings");
+  if (!s.plans.length) {
+    box.innerHTML = `<div class="empty">No savings plans yet. Add them under Accounts → your depot, or upload a screenshot of
+      your savings plans in the Inbox.</div>`;
+    return;
+  }
+  const cur = s.base_currency;
+  const pct0 = (x) => (x == null ? "–" : `${Math.round(x * 100)}%`);
+  box.innerHTML = `
+    <div class="savings-head">
+      <div><div class="muted small">Per month</div><div class="figure">${esc(money(s.monthly_total, cur))}</div></div>
+      <div><div class="muted small">Per year</div><div class="figure">${esc(money(s.yearly_total, cur))}</div></div>
+      ${s.by_owner.length > 1 ? s.by_owner.map((o) => `<div><div class="muted small">${esc(o.name)}</div>
+        <div class="figure small-figure">${esc(money(o.monthly, cur))} / month</div></div>`).join("") : ""}
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Plan</th><th class="num">${esc(cur)} / month</th><th class="num">Of new money</th>
+        <th class="num hide-sm" title="Share of the depot this fund already makes up">Already held</th></tr></thead>
+      <tbody>${s.plans.map((p) => `<tr>
+        <td>${esc(p.name)}<div class="muted small">${esc([p.symbol, p.account, state.family.length > 1 ? p.owner_name || "Joint" : ""].filter(Boolean).join(" · "))}
+          ${p.frequency !== "monthly" ? ` · ${esc(money(p.amount, p.currency))} ${esc(FREQUENCIES[p.frequency].toLowerCase())}` : ""}</div>
+          ${p.problem ? `<div class="warn">${esc(p.problem)}</div>` : ""}</td>
+        <td class="num">${esc(money(p.monthly_base, null))}</td>
+        <td class="num"><span class="share-bar" style="--w:${Math.round((p.share || 0) * 100)}%"></span>${pct0(p.share)}</td>
+        <td class="num hide-sm">${pct0(p.held_share)}</td></tr>`).join("")}</tbody></table></div>
+    <h4 class="sub-head">Where this could lead in 30 years</h4>
+    <div id="savings-chart" class="chart"></div>
+    <ul class="legend" id="savings-legend"></ul>
+    <p class="muted small">Today's depot of ${esc(money(s.invested_now, cur))} plus ${esc(money(s.monthly_total, cur))} a month, growing at
+      ${Object.entries(s.scenarios).map(([k, r]) => `${Math.round(r * 100)}%`).join(", ")} a year. An illustration, not a forecast:
+      before costs and taxes, and markets don't grow evenly.</p>`;
+  renderProjection(s);
+}
+
+function futureValue(present, monthly, annual, years) {
+  const r = (1 + annual) ** (1 / 12) - 1, n = years * 12;
+  return present * (1 + r) ** n + (r ? (monthly * ((1 + r) ** n - 1)) / r : monthly * n);
+}
+
+function renderProjection(s) {
+  const box = $("#savings-chart");
+  const years = Array.from({ length: 31 }, (_, i) => i);
+  const series = [
+    ...Object.entries(s.scenarios).map(([k, r], i) => ({ key: k, label: SCENARIO_LABELS[k] || k, cls: `seq-${i + 1}`,
+      values: years.map((y) => futureValue(s.invested_now, s.monthly_total, r, y)) })),
+    { key: "paid", label: "Paid in", cls: "paid", values: years.map((y) => s.invested_now + s.monthly_total * 12 * y) },
+  ];
+  const W = Math.max(box.clientWidth, 280), H = W < 500 ? 200 : 240, L = 52, R = W < 500 ? 8 : 80, T = 10, B = 24;
+  // round gridlines: steps of 1, 2 or 5 × a power of ten
+  const top = Math.max(...series.flatMap((x) => x.values));
+  const raw = top / 3, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map((m) => m * mag).find((v) => v >= raw);
+  const ymax = Math.ceil(top / step) * step;
+  const sx = (y) => L + (y / 30) * (W - L - R);
+  const sy = (v) => T + (1 - v / ymax) * (H - T - B);
+  const grid = Array.from({ length: Math.round(ymax / step) + 1 }, (_, i) => i * step).map((v) =>
+    `<line class="gridline" x1="${L}" x2="${W - R}" y1="${sy(v)}" y2="${sy(v)}"/>
+     <text x="${L - 8}" y="${sy(v) + 4}" text-anchor="end">${esc(money(v / 1000, null, 0))}k</text>`).join("");
+  const xl = [0, 10, 20, 30].map((y) => `<text x="${sx(y)}" y="${H - 6}" text-anchor="${y === 0 ? "start" : y === 30 ? "end" : "middle"}">${y ? `${y} y` : "today"}</text>`).join("");
+  const lines = series.map((x) => `<path class="proj ${x.cls}" d="${x.values.map((v, i) => `${i ? "L" : "M"}${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join("")}"/>`).join("");
+  const ends = W < 500 ? "" : series.map((x) => `<text class="end-label" x="${W - R + 6}" y="${sy(x.values[30]) + 4}">${esc(money(x.values[30] / 1000, null, 0))}k</text>`).join("");
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Projected depot value over 30 years in three scenarios">
+    <g class="axis">${grid}${xl}${ends}</g>${lines}
+    <line class="cross" y1="${T}" y2="${H - B}" visibility="hidden"/>
+    <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent"/></svg>`;
+  $("#savings-legend").innerHTML = series.map((x) => `<li><span class="swatch ${x.cls}"></span>${esc(x.label)}
+    <span class="val">${esc(money(x.values[30], s.base_currency))}</span></li>`).join("");
+  const svg = $("svg", box), cross = $(".cross", box), tip = $("#tooltip");
+  svg.addEventListener("pointermove", (e) => {
+    const r = svg.getBoundingClientRect();
+    const y = Math.max(0, Math.min(30, Math.round((((e.clientX - r.left) / r.width) * W - L) / ((W - L - R) / 30))));
+    cross.setAttribute("x1", sx(y)); cross.setAttribute("x2", sx(y)); cross.setAttribute("visibility", "visible");
+    tip.innerHTML = `<strong>${y ? `In ${y} years` : "Today"}</strong><br>${series.map((x) =>
+      `<span class="swatch-inline ${x.cls}"></span>${esc(x.label)}: ${esc(money(x.values[y], s.base_currency))}`).join("<br>")}`;
+    tip.hidden = false;
+    tip.style.left = Math.min(r.left + (sx(y) / W) * r.width + 12, window.innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = r.top + 8 + "px";
+  });
+  svg.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); tip.hidden = true; });
+}
+
+// --- taxes -------------------------------------------------------------------------------------------
+
+async function loadTax(year) {
+  const sel = $("#tax-year");
+  if (!sel.options.length) {
+    const now = new Date().getFullYear();
+    sel.innerHTML = [now, now - 1, now - 2].map((y) => `<option value="${y}">${y}</option>`).join("");
+    sel.value = String(new Date().getMonth() <= 3 ? now - 1 : now);  // until April: last year's return
+    sel.addEventListener("change", () => loadTax(Number(sel.value)));
+  }
+  const t = await api(`/api/tax/statement?year=${year || Number(sel.value)}`);
+  const cur = t.base_currency;
+  const people = t.deductions.filter((d) => d.pillar3a || d.pillar2_buyins || d.pillar3a_max);
+  $("#tax").innerHTML = `
+    <p class="small">${t.final ? `Values on 31 December ${t.year}` : `Values today (${esc(shortDate(t.as_of))}); final on 31 December`}.
+      Taxable wealth (without pillar 2/3a): <strong>${esc(money(t.taxable_wealth, cur))}</strong>.
+      <a href="/api/tax/statement.csv?year=${t.year}" download>Download as CSV</a></p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Account</th><th class="hide-sm">Owner</th><th class="num">Value</th><th class="num">${esc(cur)}</th></tr></thead>
+      <tbody>${t.accounts.map((a) => `<tr>
+        <td>${esc(a.institution)} · ${esc(a.name)}${a.country !== "CH" ? ` <span class="chip">${esc(a.country)}, declare as foreign</span>` : ""}
+          ${!a.taxable ? `<span class="chip">pension, not wealth</span>` : ""}
+          ${a.positions.length ? `<details class="small"><summary>${a.positions.length} positions and withholding tax</summary><ul class="tax-positions">${a.positions.map((p) => `<li>
+            <strong>${esc(p.name)}</strong> ${p.isin ? `<span class="muted">${esc(p.isin)}</span>` : ""}
+            · ${p.quantity != null ? esc(quantity(p.quantity)) + " × " + esc(money(p.price, p.price_currency, 2)) + " = " : ""}${esc(money(p.value_base, cur))}
+            <div class="muted">${esc(p.withholding)}</div></li>`).join("")}</ul></details>` : ""}</td>
+        <td class="hide-sm">${esc(a.owner)}</td>
+        <td class="num">${esc(money(a.value, a.currency))}</td><td class="num">${esc(money(a.value_base, null))}</td></tr>`).join("")}
+      </tbody></table></div>
+    ${people.length ? `<p class="small"><strong>Deductions ${t.year}:</strong> ${people.map((d) =>
+      `${esc(d.name)}: pillar 3a ${esc(money(d.pillar3a, cur))}${d.pillar3a_max ? ` of ${esc(money(d.pillar3a_max, cur))}` : ""}${d.pillar2_buyins ? `, pillar 2 buy-ins ${esc(money(d.pillar2_buyins, cur))}` : ""}`).join(" · ")}</p>` : ""}
+    <p class="muted small">Prices are the app's market prices; the tax office uses its own year-end list (ESTV Kursliste), which can differ slightly.</p>`;
+}
+
+let taxPoll;
+async function loadTaxEstimate() {
+  const e = await api("/api/tax/estimate");
+  const box = $("#tax-estimate");
+  clearTimeout(taxPoll);
+  if (e.running && !$("#tab-insights").hidden) taxPoll = setTimeout(loadTaxEstimate, 8000);
+  const button = `<button id="tax-estimate-run" class="ghost" ${e.running ? "disabled" : ""}>${e.running ? "Estimating…" : e.estimate ? "Estimate again" : "Estimate my taxes"}</button>`;
+  const status = e.running ? `<p class="muted small">Claude is looking up your canton's tariffs and doing the arithmetic; about two minutes.</p>`
+    : e.last_error ? `<p class="error small">${esc(e.last_error)}</p>` : "";
+  if (!e.estimate) {
+    box.innerHTML = `<p class="small">Claude looks up the current tariffs for your canton and municipality, estimates wealth and income tax,
+      and lists what you could do to pay less. Needs canton and approximate taxable income under Family. About $0.40 per estimate.</p>
+      ${status}<div class="actions">${button}</div>`;
+  } else {
+    const x = e.estimate;
+    box.innerHTML = `${status}
+      <div class="muted small">Estimated ${esc(shortDate(e.created_at.slice(0, 10)))} for ${e.year}</div>
+      <p>${esc(x.summary)}</p>
+      <div class="savings-head">${x.people.map((p) => `<div><div class="muted small">${esc(p.name)}</div>
+        <div class="small">Wealth tax ≈ <strong>${esc(money(p.wealth_tax_chf, "CHF"))}</strong>${p.income_tax_chf != null ? ` · income tax ≈ ${esc(money(p.income_tax_chf, "CHF"))}` : ""}
+        ${p.income_tax_marginal_rate != null ? `<br>Marginal rate ≈ ${Math.round(p.income_tax_marginal_rate * 100)}%` : ""}</div></div>`).join("")}</div>
+      <ol class="notes-list">${x.savings.map((s) => `<li><strong>${esc(s.title)}</strong>${s.estimated_saving_chf != null ? ` · saves ≈ ${esc(money(s.estimated_saving_chf, "CHF"))} a year` : ""}${s.deadline ? ` · by ${esc(s.deadline)}` : ""}
+        <div class="small">${esc(s.detail)}</div></li>`).join("")}</ol>
+      <details class="small sources"><summary>Assumptions and ${e.sources.length} sources</summary>
+        <ul>${x.assumptions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>
+        <ul>${e.sources.filter((s) => /^https?:\/\//.test(s.url)).map((s) => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></li>`).join("")}</ul></details>
+      <p class="muted small">A rough estimate to plan with, not a tax assessment; check exact figures with your canton's tax calculator.</p>
+      <div class="actions">${button}</div>`;
+  }
+  $("#tax-estimate-run").addEventListener("click", async () => {
+    try {
+      await api("/api/tax/estimate", { method: "POST" });
+      loadTaxEstimate();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+}
 
 async function loadPension() {
   const people = await api("/api/pension");
@@ -1058,6 +1277,98 @@ $("#write-briefing").addEventListener("click", async () => {
   }
 });
 
+// --- ask: chat with Claude -----------------------------------------------------------------------------
+
+const CHAT_SUGGESTIONS = ["How much can I still pay into pillar 3a this year, and what does it save in tax?",
+  "Do my ETF savings plans overlap? How could I simplify them?",
+  "Should I do a pillar 2 buy-in this year? What speaks for and against it?",
+  "What can I deduct in my tax return?"];
+let chat = [];
+
+function loadChatHistory() {
+  try { chat = JSON.parse(sessionStorage.getItem("fa-chat") || "[]"); } catch { chat = []; }
+}
+
+function saveChatHistory() {
+  try { sessionStorage.setItem("fa-chat", JSON.stringify(chat.slice(-30))); } catch {}
+}
+
+// Minimal Markdown: everything is escaped first, then **bold**, `code`, lists, headings and http(s) links.
+function markdown(text) {
+  const inline = (s) => esc(s)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  const out = [];
+  let list = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.trimEnd();
+    const bullet = line.match(/^\s*[-*•]\s+(.*)$/), numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    const type = bullet ? "ul" : numbered ? "ol" : null;
+    if (type) {
+      if (list !== type) { if (list) out.push(`</${list}>`); out.push(`<${type}>`); list = type; }
+      out.push(`<li>${inline((bullet || numbered)[1])}</li>`);
+      continue;
+    }
+    if (list) { out.push(`</${list}>`); list = null; }
+    if (!line.trim()) continue;
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    out.push(heading ? `<p><strong>${inline(heading[1])}</strong></p>` : `<p>${inline(line)}</p>`);
+  }
+  if (list) out.push(`</${list}>`);
+  return out.join("");
+}
+
+function renderChat(pending = false) {
+  const log = $("#chat-log");
+  log.innerHTML = chat.map((m) => m.role === "user"
+    ? `<div class="msg msg-user">${esc(m.content)}</div>`
+    : `<div class="msg msg-bot">${markdown(m.content)}${m.sources?.length ? `<details class="small sources"><summary>${m.sources.length} sources</summary><ul>${m.sources
+        .filter((s) => /^https?:\/\//.test(s.url)).map((s) => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></li>`).join("")}</ul></details>` : ""}</div>`).join("")
+    + (pending ? `<div class="msg msg-bot muted">Thinking and checking current rules…</div>` : "");
+  $("#chat-suggestions").innerHTML = chat.length ? "" : CHAT_SUGGESTIONS.map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("");
+  log.scrollTop = log.scrollHeight;
+}
+
+function loadChat() {
+  loadChatHistory();
+  renderChat();
+}
+
+async function sendChat(question) {
+  chat.push({ role: "user", content: question });
+  renderChat(true);
+  const form = $("#chat-form");
+  form.q.value = "";
+  form.querySelector("button").disabled = true;
+  try {
+    const r = await api("/api/chat", { method: "POST", body: { messages: chat.map(({ role, content }) => ({ role, content })) } });
+    chat.push({ role: "assistant", content: r.text, sources: r.sources });
+  } catch (err) {
+    chat.pop();
+    form.q.value = question;
+    toast(err.message);
+  } finally {
+    form.querySelector("button").disabled = false;
+    saveChatHistory();
+    renderChat();
+  }
+}
+
+$("#chat-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = e.target.q.value.trim();
+  if (q) sendChat(q);
+});
+$("#chat-form").q.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#chat-form").requestSubmit(); }
+});
+$("#chat-suggestions").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-q]");
+  if (b) sendChat(b.dataset.q);
+});
+$("#chat-new").addEventListener("click", () => { chat = []; saveChatHistory(); renderChat(); });
+
 // --- family -------------------------------------------------------------------------
 
 async function loadFamily() {
@@ -1075,6 +1386,14 @@ async function loadFamily() {
           <option value="0" ${p.has_pension_fund === 0 ? "selected" : ""}>No pension fund (e.g. self-employed)</option></select></label>
         <label>Pillar 2 buy-in potential (CHF) <input name="pillar2_buyin" type="number" step="1" min="0" value="${p.pillar2_buyin ?? ""}"
           placeholder="from the pension certificate"></label>
+        <label>Canton <select name="canton"><option value="">–</option>${CANTONS.map((c) => `<option ${p.canton === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+        <label>Municipality <input name="municipality" value="${esc(p.municipality || "")}" maxlength="80" placeholder="e.g. Zürich"></label>
+        <label>Married <select name="married">
+          <option value="" ${p.married == null ? "selected" : ""}>–</option><option value="1" ${p.married === 1 ? "selected" : ""}>Yes, taxed jointly</option>
+          <option value="0" ${p.married === 0 ? "selected" : ""}>No</option></select></label>
+        <label>Children <input name="children" type="number" min="0" max="20" value="${p.children ?? ""}"></label>
+        <label>Taxable income, approx. (CHF/year) <input name="taxable_income" type="number" step="1000" min="0" value="${p.taxable_income ?? ""}"
+          placeholder="from last year's assessment"></label>
         <button class="ghost">Save</button>
       </form></li>`;
   }).join("");
@@ -1105,7 +1424,10 @@ $("#family-list").addEventListener("submit", async (e) => {
   e.preventDefault();
   const num = (v) => (v === "" ? null : Number(v));
   const body = { birth_year: num(f.birth_year.value), pillar2_buyin: num(f.pillar2_buyin.value),
-    has_pension_fund: f.has_pension_fund.value === "" ? null : f.has_pension_fund.value === "1" };
+    has_pension_fund: f.has_pension_fund.value === "" ? null : f.has_pension_fund.value === "1",
+    canton: f.canton.value || null, municipality: f.municipality.value.trim() || null,
+    married: f.married.value === "" ? null : f.married.value === "1", children: num(f.children.value),
+    taxable_income: num(f.taxable_income.value) };
   if (body.pillar2_buyin != null) body.pillar2_buyin_as_of = new Date().toISOString().slice(0, 10);
   try {
     await api(`/api/users/${f.dataset.user}`, { method: "PATCH", body });

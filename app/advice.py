@@ -63,6 +63,8 @@ def pension_overview(today: date | None = None) -> list[dict]:
                 "year": today.year, "paid_3a": done, "max_3a": limit,
                 "room_3a": max(limit - done, 0) if limit is not None else None,
                 "pillar2_buyin": u["pillar2_buyin"], "pillar2_buyin_as_of": u["pillar2_buyin_as_of"],
+                "three_a_accounts": len(three_a), "canton": u["canton"], "municipality": u["municipality"],
+                "married": u["married"], "children": u["children"], "taxable_income": u["taxable_income"],
             })
     return out
 
@@ -99,8 +101,11 @@ def sync_tasks(today: date | None = None) -> None:
             three_a = [a["id"] for a in accounts if a["kind"] == "pillar3a"]
             if three_a:
                 _three_a_tasks(conn, u, three_a, today)
+                _stagger_task(conn, u, len(three_a), today)
             if any(a["kind"] == "pillar2" for a in accounts):
                 _pillar2_tasks(conn, u, year, today)
+        if today.month <= 4 and db.row(conn, "SELECT 1 FROM users LIMIT 1"):
+            _tax_return_tasks(conn, year - 1)
 
 
 def _three_a_tasks(conn, u: dict, accounts: list[int], today: date) -> None:
@@ -164,6 +169,43 @@ def _pillar2_tasks(conn, u: dict, year: int, today: date) -> None:
                 "for buying a home); the money is tied up until retirement; compare the fund's interest rate "
                 "and coverage ratio with investing it yourself. Many pension funds need the payment by early "
                 "or mid-December; ask yours for the deadline.")
+
+
+def _stagger_task(conn, u: dict, accounts: int, today: date) -> None:
+    """Pillar 3a is taxed when withdrawn, at a reduced rate that rises with the amount: several accounts
+    withdrawn in different years usually cost less tax than one."""
+    if not u["birth_year"] or today.year - u["birth_year"] < 40 or accounts > 1:
+        return
+    _upsert(conn, f"3a-stagger-{u['id']}", u["id"], "tax", f"Open a second pillar 3a account ({u['name']})",
+            "Pillar 3a is taxed when you withdraw it, at a rate that rises with the amount, and an account can only be "
+            "withdrawn in full. With two to five 3a accounts you can withdraw them in different years (from about "
+            "five years before retirement) and usually pay noticeably less tax. New payments can go into a second "
+            "account at your provider; existing money stays where it is.")
+
+
+def _tax_return_tasks(conn, year: int) -> None:
+    """January to April: the return for last year, with what it needs from this app."""
+    _upsert(conn, f"tax-return-{year}", None, "tax", f"Prepare the {year} tax return",
+            f"Insights → Taxes has the list of all accounts and positions on 31 December {year} (also as CSV for the "
+            "securities list) and the year's pillar 3a and pillar 2 deductions. The usual deadline is 31 March; "
+            "most cantons extend it on request.")
+    holdings = db.rows(conn, "SELECT h.isin FROM holdings h JOIN accounts a ON a.id = h.account_id "
+                             "WHERE a.archived = 0 AND a.kind NOT IN ('pillar2', 'pillar3a') AND h.isin IS NOT NULL")
+    countries = {h["isin"][:2].upper() for h in holdings}
+    if "CH" in countries:
+        _upsert(conn, f"tax-vst-{year}", None, "tax", f"Reclaim the Swiss withholding tax for {year}",
+                "You hold Swiss securities or funds: 35% withholding tax was deducted from their distributions. List "
+                "them with their income in the securities list of the return and you get the 35% back in full.")
+    if "US" in countries:
+        _upsert(conn, f"tax-da1-{year}", None, "tax", f"Credit the US withholding tax for {year} (form DA-1)",
+                "US securities (e.g. Vanguard VT) had US tax withheld on dividends. With form DA-1 in the return, the "
+                "part allowed by the tax treaty is credited; small amounts may not be worth it.")
+    foreign = db.rows(conn, "SELECT DISTINCT institution, country FROM accounts WHERE archived = 0 AND country != 'CH'")
+    if foreign:
+        banks = ", ".join(f'{f["institution"]} ({f["country"]})' for f in foreign)
+        _upsert(conn, f"tax-foreign-{year}", None, "tax", f"Declare the foreign accounts for {year}",
+                f"Accounts abroad are part of your taxable wealth too: {banks}. List them with their balance on "
+                f"31 December {year} and any interest; the tax list shows the values in CHF.")
 
 
 def set_status(task_id: int, action: str, days: int | None = None, today: date | None = None) -> dict | None:

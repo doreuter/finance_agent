@@ -757,3 +757,132 @@ def test_upload_file_may_come_in_any_field_and_missing_file_is_explained(client)
     assert r.status_code == 422
     detail = r.json()["detail"]
     assert "file (text 'IMG_1234.png')" in detail and "token (text)" in detail and token not in detail
+
+
+# --- savings plans, taxes, chat ---------------------------------------------------------------------
+
+def test_savings_plans_overview_and_projection(client):
+    from app import savings
+    depot = make_account(client, name="Neon Invest", kind="depot", valuation="holdings", owner_id=client.user["id"])
+    client.put(f"/api/accounts/{depot['id']}/holdings", json=[{"name": "MSCI World", "symbol": "XDWD.DE", "quantity": 10, "currency": "EUR"}])
+    store_price("XDWD.DE", TODAY, 100.0, "EUR")
+    store_price("EURCHF=X", TODAY, 0.9, "CHF")
+    r = client.put(f"/api/accounts/{depot['id']}/savings-plans", json=[
+        {"name": "MSCI World", "symbol": "xdwd.de", "amount": 300, "currency": "CHF"},
+        {"name": "EM Asia", "amount": 300, "currency": "EUR", "frequency": "quarterly", "day": 5}])
+    assert r.status_code == 200
+    s = client.get("/api/savings").json()
+    assert s["monthly_total"] == pytest.approx(300 + 300 / 3 * 0.9)
+    world = next(p for p in s["plans"] if p["name"] == "MSCI World")
+    assert world["symbol"] == "XDWD.DE" and world["held_share"] == pytest.approx(1.0) and world["share"] == pytest.approx(300 / 390)
+    assert s["invested_now"] == pytest.approx(900)
+    assert savings.future_value(1000, 0, 0.05, 10) == pytest.approx(1000 * 1.05 ** 10)
+    assert savings.future_value(0, 100, 0.0, 2) == pytest.approx(2400)
+    assert s["projection"]["middle"][0]["years"] == 5
+    assert client.put(f"/api/accounts/{depot['id']}/savings-plans", json=[{"name": "x", "amount": -5}]).status_code == 422
+
+
+def test_savings_plans_from_an_upload(client):
+    depot = make_account(client, name="Neon Invest", kind="depot", valuation="holdings")
+    client.post("/api/upload", files={"file": ("plans.png", b"\x89PNG", "image/png")})
+    upload_id = client.get("/api/uploads").json()[0]["id"]
+    r = client.post(f"/api/uploads/{upload_id}/apply", json={"as_of": TODAY, "items": [{
+        "account_id": depot["id"], "savings_plans": [{"name": "MSCI World", "amount": 500, "currency": "CHF", "frequency": "monthly"}]}]})
+    assert r.status_code == 200
+    assert [p["amount"] for p in client.get(f"/api/accounts/{depot['id']}/savings-plans").json()] == [500]
+
+
+def test_tax_statement_values_year_end_and_marks_pensions(client):
+    uid = client.user["id"]
+    neon = make_account(client, name="Main account", owner_id=uid)
+    dkb = make_account(client, name="Girokonto", institution="DKB", currency="EUR", country="DE", owner_id=uid)
+    viac = make_account(client, name="VIAC 3a", institution="VIAC", kind="pillar3a", owner_id=uid)
+    depot = make_account(client, name="Depot", kind="depot", valuation="holdings", owner_id=uid)
+    client.post(f"/api/accounts/{neon['id']}/balances", json={"day": "2025-12-20", "amount": 1000})
+    client.post(f"/api/accounts/{neon['id']}/balances", json={"day": "2026-01-15", "amount": 9999})  # after year-end: ignored
+    client.post(f"/api/accounts/{dkb['id']}/balances", json={"day": "2025-12-31", "amount": 500})
+    client.post(f"/api/accounts/{viac['id']}/balances", json={"day": "2025-12-31", "amount": 30000})
+    client.post(f"/api/accounts/{viac['id']}/contributions", json={"day": "2025-06-01", "amount": 7258})
+    client.put(f"/api/accounts/{depot['id']}/holdings", json=[
+        {"name": "iShares SPI", "symbol": "CHSPI.SW", "isin": "CH0237935652", "quantity": 10, "currency": "CHF"},
+        {"name": "Vanguard VT", "symbol": "VT", "isin": "US9220427424", "quantity": 1, "currency": "USD"}])
+    store_price("CHSPI.SW", "2025-12-30", 170.0, "CHF")
+    store_price("CHSPI.SW", "2026-02-01", 200.0, "CHF")
+    store_price("VT", "2025-12-31", 130.0, "USD")
+    store_price("USDCHF=X", "2025-12-31", 0.8, "CHF")
+    store_price("EURCHF=X", "2025-12-31", 0.93, "CHF")
+    t = client.get("/api/tax/statement?year=2025").json()
+    by = {a["name"]: a for a in t["accounts"]}
+    assert t["final"] and by["Main account"]["value_base"] == pytest.approx(1000)
+    assert by["Girokonto"]["value_base"] == pytest.approx(465) and t["foreign_accounts"][0]["name"] == "Girokonto"
+    assert not by["VIAC 3a"]["taxable"]
+    assert by["Depot"]["value_base"] == pytest.approx(1700 + 104)
+    spi = next(p for p in by["Depot"]["positions"] if p["isin"].startswith("CH"))
+    assert spi["price"] == 170 and spi["domicile"] == "CH" and "35%" in spi["withholding"]
+    assert t["taxable_wealth"] == pytest.approx(1000 + 465 + 1804)
+    assert t["deductions"][0]["pillar3a"] == 7258
+    csv_text = client.get("/api/tax/statement.csv?year=2025").content.decode("utf-8-sig")
+    assert "iShares SPI;CH0237935652;10.00;170.00" in csv_text and "no (pension)" in csv_text
+    assert client.get("/api/tax/statement?year=1990").status_code == 422
+
+
+def test_tax_reminders_in_spring(client):
+    from app import advice
+    uid = client.user["id"]
+    client.patch(f"/api/users/{uid}", json={"birth_year": 1975})
+    make_account(client, name="VIAC 3a", institution="VIAC", kind="pillar3a", owner_id=uid)
+    make_account(client, name="Girokonto", institution="DKB", currency="EUR", country="DE", owner_id=uid)
+    depot = make_account(client, name="Depot", kind="depot", valuation="holdings", owner_id=uid)
+    client.put(f"/api/accounts/{depot['id']}/holdings", json=[
+        {"name": "SPI", "isin": "CH0237935652", "quantity": 1, "manual_price": 100},
+        {"name": "VT", "isin": "US9220427424", "quantity": 1, "manual_price": 100}])
+    advice.sync_tasks(date(2026, 2, 10))
+    keys = set(_tasks(client))
+    assert {"tax-return-2025", "tax-vst-2025", "tax-da1-2025", "tax-foreign-2025", f"3a-stagger-{uid}"} <= keys
+    assert "DKB (DE)" in _tasks(client)["tax-foreign-2025"]["body"]
+    advice.sync_tasks(date(2026, 6, 1))  # no new return tasks outside spring (the existing ones stay until done)
+    assert "tax-return-2026" not in set(_tasks(client))
+
+
+def test_tax_profile_fields(client):
+    uid = client.user["id"]
+    assert client.patch(f"/api/users/{uid}", json={"canton": "ZH", "municipality": "Zürich", "married": True,
+                                                   "children": 2, "taxable_income": 150000}).status_code == 200
+    p = client.get("/api/pension").json()[0]
+    assert (p["canton"], p["married"], p["children"], p["taxable_income"]) == ("ZH", 1, 2, 150000)
+    assert client.patch(f"/api/users/{uid}", json={"canton": "Zurich"}).status_code == 422
+
+
+def test_tax_estimate_flow(client, monkeypatch):
+    from app import tax
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    with pytest.raises(tax.TaxError, match="canton"):
+        tax.generate(2026, client=object())
+    client.patch(f"/api/users/{client.user['id']}", json={"canton": "ZH", "taxable_income": 120000})
+    seen = {}
+    monkeypatch.setattr(tax, "_research", lambda c, data: (seen.setdefault("data", data), ("memo", [{"url": "https://zh.ch/x", "title": "ZH"}]))[1])
+    monkeypatch.setattr(tax, "_estimate", lambda c, data, memo: tax.TaxEstimate(
+        summary="s", people=[tax.PersonEstimate(name="Dominik", wealth_tax_chf=300, income_tax_marginal_rate=0.3)],
+        savings=[tax.Saving(title="Max pillar 3a", detail="d", estimated_saving_chf=2177, deadline="31 December")],
+        assumptions=["2026 tariff"]))
+    tax.generate(2026, client=object())
+    e = client.get("/api/tax/estimate").json()
+    assert e["estimate"]["savings"][0]["estimated_saving_chf"] == 2177 and not e["running"]
+    assert seen["data"]["people"][0]["canton"] == "ZH" and seen["data"]["people"][0]["approx_taxable_income_chf"] == 120000
+
+
+def test_chat_answers_with_family_data_and_is_limited(client, monkeypatch):
+    from app import chat
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    seen = {}
+    monkeypatch.setattr(chat, "ask", lambda c, messages, context: (seen.update(messages=messages, context=context),
+                                                                   {"text": "**Yes.**", "sources": []})[1])
+    make_account(client, name="VIAC 3a", institution="VIAC", kind="pillar3a", owner_id=client.user["id"])
+    r = client.post("/api/chat", json={"messages": [{"role": "user", "content": "How much 3a is left?"}]})
+    assert r.status_code == 200 and r.json()["text"] == "**Yes.**"
+    assert '"asking": "Dominik"' in seen["context"] and "VIAC 3a" in seen["context"]
+    assert client.post("/api/chat", json={"messages": [{"role": "assistant", "content": "hi"}]}).status_code == 422
+    monkeypatch.setattr(chat, "MAX_QUESTIONS_PER_DAY", 1)
+    assert client.post("/api/chat", json={"messages": [{"role": "user", "content": "again"}]}).status_code == 429
+    client.post("/api/logout")
+    assert client.post("/api/chat", json={"messages": [{"role": "user", "content": "x"}]}).status_code == 401

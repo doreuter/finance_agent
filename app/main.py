@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel, Field, field_validator
 
-from . import advice, auth, briefing, config, db, extract, match, prices, usage, valuation
+from . import advice, auth, briefing, chat, config, db, extract, match, prices, savings, tax, usage, valuation
 
 config.load_dotenv()
 logger = logging.getLogger("financeagent")
@@ -75,6 +75,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="FinanceAgent", lifespan=lifespan)
+app.include_router(savings.router)
+app.include_router(tax.router)
+app.include_router(chat.router)
 
 
 OPEN_PATHS = {"/api/status", "/api/login", "/api/setup", "/healthz"}
@@ -323,6 +326,7 @@ class AccountIn(BaseModel):
     currency: str = Field("CHF", pattern=r"^[A-Z]{3}$")
     valuation: Literal["balance", "holdings"] = "balance"
     owner_id: Optional[int] = None  # a family member; None = joint account
+    country: str = Field("CH", pattern=r"^[A-Z]{2}$")  # where the bank is (tax return: foreign accounts)
 
 
 class AccountPatch(BaseModel):
@@ -333,6 +337,7 @@ class AccountPatch(BaseModel):
     valuation: Optional[Literal["balance", "holdings"]] = None
     archived: Optional[bool] = None
     owner_id: Optional[int] = None  # send null explicitly to make it a joint account
+    country: Optional[str] = Field(None, pattern=r"^[A-Z]{2}$")
 
 
 def _check_owner(conn, owner_id: int | None) -> None:
@@ -362,8 +367,8 @@ def create_account(body: AccountIn):
 def _insert_account(conn, body: AccountIn) -> int:
     _check_owner(conn, body.owner_id)
     cur = conn.execute(
-        "INSERT INTO accounts (name, institution, kind, currency, valuation, owner_id) VALUES (?, ?, ?, ?, ?, ?)",
-        (body.name, body.institution, body.kind, body.currency, body.valuation, body.owner_id),
+        "INSERT INTO accounts (name, institution, kind, currency, valuation, owner_id, country) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (body.name, body.institution, body.kind, body.currency, body.valuation, body.owner_id, body.country),
     )
     return cur.lastrowid
 
@@ -533,6 +538,11 @@ class ProfilePatch(BaseModel):
     has_pension_fund: Optional[bool] = None
     pillar2_buyin: Optional[float] = Field(None, ge=0)
     pillar2_buyin_as_of: Optional[date] = None
+    canton: Optional[str] = Field(None, pattern=r"^[A-Z]{2}$")
+    municipality: Optional[str] = Field(None, max_length=80)
+    married: Optional[bool] = None
+    children: Optional[int] = Field(None, ge=0, le=20)
+    taxable_income: Optional[float] = Field(None, ge=0, le=100_000_000)
 
 
 @app.patch("/api/users/{user_id}")
@@ -825,6 +835,7 @@ class ApplyItem(BaseModel):
     positions: list[PositionIn] = []
     contributions_ytd: Optional[float] = Field(None, ge=0)  # pillar 3a: paid in this year so far, per the statement
     pillar2_buyin: Optional[float] = Field(None, ge=0)      # pillar 2: buy-in potential, per the certificate
+    savings_plans: Optional[list[savings.PlanIn]] = None    # replaces the account's savings plans when given
 
 
 class ApplyIn(BaseModel):
@@ -896,6 +907,8 @@ def apply_upload(upload_id: int, body: ApplyIn):
                              (account_id, year))
                 conn.execute("INSERT INTO contributions (account_id, day, amount, source, note) VALUES (?, ?, ?, 'upload', ?)",
                              (account_id, body.as_of.isoformat(), item.contributions_ytd, f"upload #{upload_id}"))
+            if item.savings_plans is not None:
+                savings.replace_plans(conn, account_id, item.savings_plans)
             if item.pillar2_buyin is not None:
                 owner = db.row(conn, "SELECT owner_id FROM accounts WHERE id = ?", account_id)["owner_id"]
                 owner = owner or db.row(conn, "SELECT user_id FROM uploads WHERE id = ?", upload_id)["user_id"]

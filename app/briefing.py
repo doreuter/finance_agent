@@ -17,7 +17,7 @@ from typing import Literal
 import anthropic
 from pydantic import BaseModel, Field
 
-from . import advice, config, db, usage, valuation
+from . import advice, config, db, research, usage, valuation
 
 logger = logging.getLogger("financeagent")
 MAX_CONTINUATIONS = 5  # pause_turn resumes of the research call
@@ -144,22 +144,10 @@ def _research(client: anthropic.Anthropic, data: dict) -> tuple[str, list[dict]]
             break
         # the server's search loop paused; send the turn so far back and it resumes where it stopped
         messages = [messages[0], {"role": "assistant", "content": content}]
-    text, sources = [], {}
-    for block in content:
-        if block.type == "text":
-            text.append(block.text)
-            for c in getattr(block, "citations", None) or []:
-                if getattr(c, "url", None):
-                    sources.setdefault(c.url, getattr(c, "title", None) or c.url)
-        elif block.type == "web_search_tool_result" and isinstance(block.content, list):
-            for r in block.content:
-                if getattr(r, "url", None):
-                    sources.setdefault(r.url, getattr(r, "title", None) or r.url)
-    memo = "\n".join(text).strip()
+    memo, sources = research.text_and_sources(content)
     if not memo:
         raise BriefingError(f"The research step returned no text (stop reason {response.stop_reason})")
-    # links come from web pages: only plain web links reach the page
-    return memo, [{"url": u, "title": t} for u, t in sources.items() if u.startswith(("https://", "http://"))]
+    return memo, sources
 
 
 def _write(client: anthropic.Anthropic, data: dict, memo: str) -> Briefing:

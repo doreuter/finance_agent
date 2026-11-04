@@ -77,6 +77,31 @@ CREATE TABLE IF NOT EXISTS contributions (  -- payments into a pillar 3a account
     source TEXT NOT NULL DEFAULT 'manual',  -- manual | upload (a statement's year-to-date total)
     note TEXT
 );
+CREATE TABLE IF NOT EXISTS savings_plans (  -- recurring purchases, e.g. a monthly ETF savings plan
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    symbol TEXT,
+    isin TEXT,
+    amount REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'CHF',
+    frequency TEXT NOT NULL DEFAULT 'monthly',  -- monthly | quarterly | yearly
+    day INTEGER,
+    active INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS tax_estimates (  -- Claude's estimate of wealth/income tax and savings potential
+    id INTEGER PRIMARY KEY,
+    year INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',  -- running | done | failed
+    content_json TEXT,
+    error TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS chat_log (  -- one row per question, for the daily limit (the conversation stays in the browser)
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS tasks (  -- reminders and suggested actions, e.g. "pay into 3a for 2027"
     id INTEGER PRIMARY KEY,
     key TEXT NOT NULL UNIQUE,  -- stable id, so a rule or briefing never creates the same task twice
@@ -131,18 +156,24 @@ def uploads_dir() -> Path:
 
 # Columns added after the first release; init() adds them to an existing database.
 MIGRATIONS = {
-    "accounts": {"owner_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL"},  # NULL = joint
+    "accounts": {"owner_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL",  # NULL = joint
+                 "country": "TEXT NOT NULL DEFAULT 'CH'"},  # where the bank is; foreign accounts are declared separately
     "uploads": {"user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL"},
     # 1 = only the position's total value is known (from a statement): stored as quantity 1 x manual_price
     "holdings": {"value_only": "INTEGER NOT NULL DEFAULT 0"},
     # profile for pillar 2/3a suggestions
     "users": {"birth_year": "INTEGER", "has_pension_fund": "INTEGER",  # 1 employed with pension fund, 0 not
-              "pillar2_buyin": "REAL", "pillar2_buyin_as_of": "TEXT"},  # buy-in potential from the Vorsorgeausweis
+              "pillar2_buyin": "REAL", "pillar2_buyin_as_of": "TEXT",  # buy-in potential from the Vorsorgeausweis
+              # for the tax features: where the person is taxed and roughly on what income
+              "canton": "TEXT", "municipality": "TEXT", "married": "INTEGER", "children": "INTEGER",
+              "taxable_income": "REAL"},
 }
 # Run once when a column is added, to fill it for existing rows.
 BACKFILL = {
     ("holdings", "value_only"): "UPDATE holdings SET value_only = 1 WHERE symbol IS NULL AND quantity = 1 "
                                 "AND manual_price IS NOT NULL AND manual_price != 1",
+    ("accounts", "country"): "UPDATE accounts SET country = 'DE' WHERE lower(institution) IN ('dkb', 'comdirect', "
+                             "'ing', 'n26', 'consorsbank', 'trade republic', 'scalable capital')",
 }
 
 

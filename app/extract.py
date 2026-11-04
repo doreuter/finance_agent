@@ -38,6 +38,16 @@ class Position(BaseModel):
                                     "before use.")
 
 
+class FoundPlan(BaseModel):
+    name: str = Field(description="Security or fund the plan buys, as shown")
+    isin: Optional[str] = None
+    symbol: Optional[str] = None
+    amount: float = Field(description="Amount invested per execution")
+    currency: Optional[str] = None
+    frequency: Literal["monthly", "quarterly", "yearly"] = "monthly"
+    day: Optional[int] = Field(None, description="Day of the month it runs, if shown")
+
+
 class FoundAccount(BaseModel):
     account_id: Optional[int] = Field(None, description="id of the matching account from the user's list, or null if it is not clearly the same account")
     name: str = Field(description="Account name as shown, e.g. 'Privatkonto', 'Space Ferien', 'Tagesgeld', 'Visa Card'")
@@ -49,6 +59,8 @@ class FoundAccount(BaseModel):
                                                "year so far, if the statement shows it (Einzahlungen / versements)")
     pillar2_buyin: Optional[float] = Field(None, description="Pillar 2 certificate: maximum possible buy-in "
                                            "(Einkaufspotenzial / möglicher Einkauf / rachat possible), if shown")
+    savings_plans: list[FoundPlan] = Field(default_factory=list, description="Recurring savings plans (Sparplan / "
+                                           "plan d'épargne) shown for this account: what they buy, how much, how often")
 
 
 class Extraction(BaseModel):
