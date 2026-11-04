@@ -30,6 +30,10 @@ def setup_token() -> str:
     return os.environ.get("SETUP_TOKEN", "")
 
 
+def anthropic_key() -> str:
+    return os.environ.get("ANTHROPIC_API_KEY", "")
+
+
 def claude_model() -> str:
     return os.environ.get("CLAUDE_MODEL") or "claude-opus-5-5"
 
@@ -37,3 +41,8 @@ def claude_model() -> str:
 def refresh_hours() -> float:
     """How often the background job fetches prices and records the day's values."""
     return float(os.environ.get("REFRESH_HOURS", "6"))
+
+
+def weekly_briefing() -> bool:
+    """Write the market briefing automatically every Monday (WEEKLY_BRIEFING=0 turns it off)."""
+    return os.environ.get("WEEKLY_BRIEFING", "1") != "0"

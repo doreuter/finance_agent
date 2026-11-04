@@ -45,6 +45,10 @@ class FoundAccount(BaseModel):
     balance: Optional[float] = Field(None, description="Value/balance of this account on as_of, in currency; credit card debt is negative")
     currency: Optional[str] = Field(None, description="ISO currency of balance, e.g. CHF")
     positions: list[Position] = Field(default_factory=list, description="Securities/funds held in this account, if listed")
+    contributions_ytd: Optional[float] = Field(None, description="Pillar 3a: total paid in during the current calendar "
+                                               "year so far, if the statement shows it (Einzahlungen / versements)")
+    pillar2_buyin: Optional[float] = Field(None, description="Pillar 2 certificate: maximum possible buy-in "
+                                           "(Einkaufspotenzial / möglicher Einkauf / rachat possible), if shown")
 
 
 class Extraction(BaseModel):

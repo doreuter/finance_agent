@@ -442,3 +442,116 @@ def test_upload_updates_truncated_names_instead_of_duplicating(client):
     apply([{"name": "Nasdaq 100 (Xtrackers)", "value": 1, "currency": "CHF", "replaces_id": foreign_id}], positions_reviewed=True)
     assert names() == ["Nasdaq 100 (Xtrackers)", "Nasdaq 100 (Xtrackers)", "ZKB Gold ETF AA CHF"]
     assert len(client.get(f"/api/accounts/{other['id']}/holdings").json()) == 1
+
+
+# --- pillar 2/3a reminders and the weekly briefing -------------------------------------------------
+
+def _tasks(client):
+    return {t["key"]: t for t in client.get("/api/tasks").json()["open"]}
+
+
+def test_3a_reminders_follow_payments_and_calendar(client):
+    from app import advice
+    uid = client.user["id"]
+    three_a = make_account(client, name="VIAC 3a", institution="VIAC", kind="pillar3a", owner_id=uid)
+    advice.sync_tasks(date(2026, 1, 5))
+    t = _tasks(client)[f"3a-pay-2026-{uid}"]
+    assert "CHF 7'258 can still be paid in" in t["body"]
+    client.post(f"/api/accounts/{three_a['id']}/contributions", json={"day": "2026-03-01", "amount": 3000})
+    advice.sync_tasks(date(2026, 3, 2))
+    assert "CHF 4'258 can still" in _tasks(client)[f"3a-pay-2026-{uid}"]["body"]
+    advice.sync_tasks(date(2026, 11, 20))
+    assert f"3a-deadline-2026-{uid}" in _tasks(client)
+    client.post(f"/api/accounts/{three_a['id']}/contributions", json={"day": "2026-11-21", "amount": 4258})
+    advice.sync_tasks(date(2026, 11, 22))
+    assert not any(k.startswith("3a-") for k in _tasks(client))  # paid in full: closed
+    # the next year: last year's payments complete, so no catch-up; a new pay reminder
+    advice.sync_tasks(date(2027, 1, 3))
+    assert set(k for k in _tasks(client) if k.startswith("3a-")) == {f"3a-pay-2027-{uid}"}
+
+
+def test_3a_catch_up_and_statement_totals(client):
+    from app import advice
+    uid = client.user["id"]
+    three_a = make_account(client, name="VIAC 3a", institution="VIAC", kind="pillar3a", owner_id=uid)
+    client.post("/api/upload", files={"file": ("viac.png", b"\x89PNG", "image/png")})
+    upload_id = client.get("/api/uploads").json()[0]["id"]
+    r = client.post(f"/api/uploads/{upload_id}/apply", json={"as_of": "2025-12-31", "items": [
+        {"account_id": three_a["id"], "balance": 30000, "contributions_ytd": 5000}]})
+    assert r.status_code == 200
+    advice.sync_tasks(date(2026, 2, 1))
+    t = _tasks(client)[f"3a-catchup-2025-{uid}"]
+    assert "gap of CHF 2'258" in t["body"]
+
+
+def test_pillar2_certificate_then_buyin_reminder(client):
+    from app import advice
+    uid = client.user["id"]
+    p2 = make_account(client, name="AXA BVG", institution="AXA", kind="pillar2", owner_id=uid)
+    advice.sync_tasks(date(2026, 9, 10))
+    assert f"p2-certificate-2026-{uid}" in _tasks(client)
+    client.post("/api/upload", files={"file": ("axa.pdf", b"%PDF", "application/pdf")})
+    upload_id = client.get("/api/uploads").json()[0]["id"]
+    client.post(f"/api/uploads/{upload_id}/apply", json={"as_of": "2026-01-01", "items": [
+        {"account_id": p2["id"], "balance": 120000, "pillar2_buyin": 85000}]})
+    advice.sync_tasks(date(2026, 9, 10))
+    t = _tasks(client)
+    assert f"p2-certificate-2026-{uid}" not in t and "CHF 85'000" in t[f"p2-buyin-2026-{uid}"]["body"]
+    assert client.get("/api/pension").json()[0]["pillar2_buyin"] == 85000
+
+
+def test_task_snooze_done_and_dismiss(client):
+    from app import advice
+    uid = client.user["id"]
+    make_account(client, name="VIAC 3a", institution="VIAC", kind="pillar3a", owner_id=uid)
+    advice.sync_tasks(date(2026, 1, 5))
+    task = _tasks(client)[f"3a-pay-2026-{uid}"]
+    advice.set_status(task["id"], "snooze", 91, today=date(2026, 1, 5))
+    assert client.get("/api/tasks").json()["snoozed"][0]["snooze_until"] == "2026-04-06"
+    advice.sync_tasks(date(2026, 3, 1))
+    assert f"3a-pay-2026-{uid}" not in _tasks(client)
+    advice.sync_tasks(date(2026, 4, 6))
+    assert f"3a-pay-2026-{uid}" in _tasks(client)  # back on its date
+    assert client.post(f"/api/tasks/{task['id']}", json={"action": "dismissed"}).status_code == 200
+    advice.sync_tasks(date(2026, 5, 1))
+    assert f"3a-pay-2026-{uid}" not in _tasks(client)  # stays dismissed
+
+
+def test_profile_update(client):
+    uid = client.user["id"]
+    r = client.patch(f"/api/users/{uid}", json={"birth_year": 1988, "has_pension_fund": False})
+    assert r.status_code == 200
+    p = client.get("/api/pension").json()[0]
+    assert p["birth_year"] == 1988 and p["has_pension_fund"] == 0 and p["max_3a"] is None
+    assert client.patch(f"/api/users/{uid}", json={"birth_year": 1800}).status_code == 422
+
+
+def test_briefing_is_stored_with_tasks(client, monkeypatch):
+    from app import briefing
+    depot = make_account(client, name="Neon Invest", kind="depot", valuation="holdings")
+    client.put(f"/api/accounts/{depot['id']}/holdings", json=[{"name": "MSCI World", "symbol": "XDWD.DE", "quantity": 10, "currency": "EUR"}])
+    store_price("XDWD.DE", TODAY, 140.0, "EUR")
+    store_price("EURCHF=X", TODAY, 0.93, "CHF")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    seen = {}
+    monkeypatch.setattr(briefing, "_research", lambda client_, data: (seen.setdefault("data", data), ("memo", [{"url": "https://x", "title": "X"}]))[1])
+    monkeypatch.setattr(briefing, "_write", lambda client_, data, memo: briefing.Briefing(
+        headline="Calm week", summary="Little changed.", market=[briefing.Note(title="Rates", detail="Unchanged.")],
+        positions=[briefing.PositionView(name="MSCI World", symbol="XDWD.DE", stance="hold", reasoning="Core holding.")],
+        considerations=[], tasks=[briefing.SuggestedTask(key="Check overlap!", title="Check ETF overlap", body="...")]))
+    assert briefing.due()
+    briefing.generate(client=object())
+    assert not briefing.due()
+    assert seen["data"]["positions"][0]["value_chf"] == round(10 * 140 * 0.93)
+    b = client.get("/api/briefing").json()
+    assert b["briefing"]["headline"] == "Calm week" and b["sources"][0]["url"] == "https://x" and not b["running"]
+    assert "b-check-overlap" in _tasks(client)
+
+
+def test_briefing_failure_is_recorded(client, monkeypatch):
+    from app import briefing
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    with pytest.raises(briefing.BriefingError):
+        briefing.generate()
+    b = client.get("/api/briefing").json()
+    assert "API key" in b["last_error"] and not b["running"]

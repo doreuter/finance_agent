@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, config, db, extract, match, prices, valuation
+from . import advice, auth, briefing, config, db, extract, match, prices, valuation
 
 config.load_dotenv()
 logger = logging.getLogger("financeagent")
@@ -35,11 +35,17 @@ SUFFIX_TYPES = {".csv": "text/csv", ".txt": "text/plain", ".pdf": "application/p
 
 
 def _refresh_loop(stop: threading.Event) -> None:
+    """Prices and daily values every few hours; reminders; the weekly briefing from Monday."""
     while not stop.is_set():
         try:
             errors = valuation.refresh()
             if errors:
                 logger.warning("refresh finished with %d price errors", len(errors))
+            advice.sync_tasks()
+            if config.weekly_briefing() and briefing.due():
+                briefing.generate()
+        except briefing.BriefingError as e:
+            logger.warning("weekly briefing failed: %s", e)
         except Exception:  # keep the loop alive; the next run may succeed
             logger.exception("refresh failed")
         stop.wait(config.refresh_hours() * 3600)
@@ -48,6 +54,7 @@ def _refresh_loop(stop: threading.Event) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    advice.sync_tasks()
     stop = threading.Event()
     if not os.environ.get("FINANCE_NO_REFRESH"):
         threading.Thread(target=_refresh_loop, args=(stop,), daemon=True).start()
@@ -478,6 +485,109 @@ def search_symbols(q: str):
         raise HTTPException(502, f"symbol search failed: {e}")
 
 
+# --- pension: profile, 3a payments, reminders --------------------------------
+
+class ProfilePatch(BaseModel):
+    birth_year: Optional[int] = Field(None, ge=1920, le=2020)
+    has_pension_fund: Optional[bool] = None
+    pillar2_buyin: Optional[float] = Field(None, ge=0)
+    pillar2_buyin_as_of: Optional[date] = None
+
+
+@app.patch("/api/users/{user_id}")
+def update_profile(user_id: int, body: ProfilePatch):
+    """Profile details for the pillar 2/3a suggestions; family members can fill them in for each other."""
+    changes = body.model_dump(exclude_unset=True)
+    with db.connect() as conn:
+        if not db.row(conn, "SELECT 1 FROM users WHERE id = ?", user_id):
+            raise HTTPException(404, "family member not found")
+        for field, value in changes.items():
+            if isinstance(value, bool):
+                value = int(value)
+            elif isinstance(value, date):
+                value = value.isoformat()
+            conn.execute(f"UPDATE users SET {field} = ? WHERE id = ?", (value, user_id))
+    advice.sync_tasks()
+    return {"ok": True}
+
+
+@app.get("/api/pension")
+def pension():
+    return advice.pension_overview()
+
+
+class ContributionIn(BaseModel):
+    day: date
+    amount: float = Field(gt=0)
+    note: Optional[str] = Field(None, max_length=200)
+
+
+@app.get("/api/accounts/{account_id}/contributions")
+def list_contributions(account_id: int):
+    with db.connect() as conn:
+        _account(conn, account_id)
+        return db.rows(conn, "SELECT * FROM contributions WHERE account_id = ? ORDER BY day DESC, id DESC", account_id)
+
+
+@app.post("/api/accounts/{account_id}/contributions")
+def add_contribution(account_id: int, body: ContributionIn):
+    with db.connect() as conn:
+        _account(conn, account_id)
+        conn.execute("INSERT INTO contributions (account_id, day, amount, note) VALUES (?, ?, ?, ?)",
+                     (account_id, body.day.isoformat(), body.amount, body.note))
+    advice.sync_tasks()
+    return {"ok": True}
+
+
+@app.delete("/api/contributions/{contribution_id}")
+def delete_contribution(contribution_id: int):
+    with db.connect() as conn:
+        conn.execute("DELETE FROM contributions WHERE id = ?", (contribution_id,))
+    advice.sync_tasks()
+    return {"ok": True}
+
+
+@app.get("/api/tasks")
+def tasks():
+    return advice.list_tasks()
+
+
+class TaskAction(BaseModel):
+    action: Literal["done", "dismissed", "snooze", "open"]
+    days: Optional[int] = Field(None, ge=1, le=730)
+
+
+@app.post("/api/tasks/{task_id}")
+def update_task(task_id: int, body: TaskAction):
+    task = advice.set_status(task_id, body.action, body.days)
+    if not task:
+        raise HTTPException(404, "task not found")
+    return task
+
+
+# --- weekly briefing ---------------------------------------------------------
+
+@app.get("/api/briefing")
+def get_briefing():
+    return briefing.latest()
+
+
+def _run_briefing() -> None:
+    try:
+        briefing.generate()
+    except briefing.BriefingError as e:
+        logger.warning("briefing failed: %s", e)
+
+
+@app.post("/api/briefing")
+def start_briefing(background: BackgroundTasks):
+    """Write a briefing now (takes a few minutes; the page polls GET /api/briefing)."""
+    if briefing.latest()["running"]:
+        raise HTTPException(409, "A briefing is already being written")
+    background.add_task(_run_briefing)
+    return {"ok": True}
+
+
 # --- uploads (statements, CSVs, screenshots) ---------------------------------
 
 def _run_extraction(upload_id: int) -> None:
@@ -582,6 +692,8 @@ class ApplyItem(BaseModel):
     remove_missing: bool = False    # ...and delete positions the file doesn't list (a full statement)
     positions_reviewed: bool = False  # replaces_id was chosen in the review; otherwise matched automatically
     positions: list[PositionIn] = []
+    contributions_ytd: Optional[float] = Field(None, ge=0)  # pillar 3a: paid in this year so far, per the statement
+    pillar2_buyin: Optional[float] = Field(None, ge=0)      # pillar 2: buy-in potential, per the certificate
 
 
 class ApplyIn(BaseModel):
@@ -647,10 +759,23 @@ def apply_upload(upload_id: int, body: ApplyIn):
                 replaced = True
             if item.balance is not None:
                 _add_balance(conn, account_id, body.as_of.isoformat(), item.balance, "upload", f"upload #{upload_id}")
+            if item.contributions_ytd is not None:  # a statement's year-to-date total replaces the previous one
+                year = str(body.as_of.year)
+                conn.execute("DELETE FROM contributions WHERE account_id = ? AND source = 'upload' AND substr(day, 1, 4) = ?",
+                             (account_id, year))
+                conn.execute("INSERT INTO contributions (account_id, day, amount, source, note) VALUES (?, ?, ?, 'upload', ?)",
+                             (account_id, body.as_of.isoformat(), item.contributions_ytd, f"upload #{upload_id}"))
+            if item.pillar2_buyin is not None:
+                owner = db.row(conn, "SELECT owner_id FROM accounts WHERE id = ?", account_id)["owner_id"]
+                owner = owner or db.row(conn, "SELECT user_id FROM uploads WHERE id = ?", upload_id)["user_id"]
+                if owner:
+                    conn.execute("UPDATE users SET pillar2_buyin = ?, pillar2_buyin_as_of = ? WHERE id = ?",
+                                 (item.pillar2_buyin, body.as_of.isoformat(), owner))
         conn.execute("UPDATE uploads SET status = 'applied' WHERE id = ?", (upload_id,))
     errors = valuation.refresh() if replaced else []
     if not replaced:
         valuation.record_today()
+    advice.sync_tasks()
     return {"ok": True, "notes": notes, "errors": errors}
 
 

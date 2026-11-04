@@ -69,6 +69,35 @@ CREATE TABLE IF NOT EXISTS daily_values (  -- what each account was worth, recor
     value_base REAL NOT NULL,  -- base currency (CHF)
     PRIMARY KEY (day, account_id)
 );
+CREATE TABLE IF NOT EXISTS contributions (  -- payments into a pillar 3a account (or pillar 2 buy-ins)
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    amount REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',  -- manual | upload (a statement's year-to-date total)
+    note TEXT
+);
+CREATE TABLE IF NOT EXISTS tasks (  -- reminders and suggested actions, e.g. "pay into 3a for 2027"
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,  -- stable id, so a rule or briefing never creates the same task twice
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,  -- NULL = whole family
+    category TEXT NOT NULL,    -- pillar3a | pillar2 | portfolio
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',  -- open | snoozed | done | dismissed
+    snooze_until TEXT,
+    source TEXT NOT NULL DEFAULT 'rule',  -- rule | briefing
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS briefings (  -- the weekly market briefing
+    id INTEGER PRIMARY KEY,
+    week TEXT NOT NULL,        -- ISO week, e.g. 2026-W45
+    status TEXT NOT NULL DEFAULT 'running',  -- running | done | failed
+    content_json TEXT,
+    error TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS uploads (  -- statements, CSVs and screenshots waiting for review
     id INTEGER PRIMARY KEY,
     filename TEXT NOT NULL,
@@ -96,6 +125,9 @@ MIGRATIONS = {
     "uploads": {"user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL"},
     # 1 = only the position's total value is known (from a statement): stored as quantity 1 x manual_price
     "holdings": {"value_only": "INTEGER NOT NULL DEFAULT 0"},
+    # profile for pillar 2/3a suggestions
+    "users": {"birth_year": "INTEGER", "has_pension_fund": "INTEGER",  # 1 employed with pension fund, 0 not
+              "pillar2_buyin": "REAL", "pillar2_buyin_as_of": "TEXT"},  # buy-in potential from the Vorsorgeausweis
 }
 # Run once when a column is added, to fill it for existing rows.
 BACKFILL = {

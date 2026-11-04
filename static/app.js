@@ -101,7 +101,13 @@ function showTab(name) {
   if (name === "accounts") loadAccounts();
   if (name === "inbox") loadUploads();
   if (name === "family") loadFamily();
+  if (name === "insights") loadInsights();
 }
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-goto]");
+  if (b) showTab(b.dataset.goto);
+});
 
 function showScreen(sel) {
   document.querySelectorAll(".tab").forEach((t) => (t.hidden = true));
@@ -200,6 +206,7 @@ async function loadOverview() {
   renderAccountsTable(summary);
   renderPortfolio(portfolio);
   updateInboxBadge();
+  updateTasksBadge();
 }
 
 function renderSplit(summary) {
@@ -443,7 +450,6 @@ function renderAccountsTable(summary) {
     box.innerHTML = state.owner === "all"
       ? `<div class="empty">No accounts yet. <button class="link" data-goto="accounts">Set them up</button></div>`
       : `<div class="empty">No accounts for this filter.</div>`;
-    $("[data-goto]", box)?.addEventListener("click", () => showTab("accounts"));
     return;
   }
   const row = (a) => `<tr>
@@ -557,6 +563,7 @@ async function renderAccountDetail() {
   });
   if (a.valuation === "holdings") renderHoldings(a);
   else renderBalances(a, today);
+  if (a.kind === "pillar3a") renderContributions(a, today);
 }
 
 async function renderBalances(a, today) {
@@ -583,6 +590,37 @@ async function renderBalances(a, today) {
   document.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
     await api(`/api/balances/${b.dataset.del}`, { method: "DELETE" });
     renderBalances(a, today);
+  }));
+}
+
+async function renderContributions(a, today) {
+  const list = await api(`/api/accounts/${a.id}/contributions`);
+  let box = $("#contributions");
+  if (!box) {
+    $("#detail-body").insertAdjacentHTML("afterend", `<div id="contributions" style="margin-top:20px"></div>`);
+    box = $("#contributions");
+  }
+  box.innerHTML = `<h2>Payments into this 3a account</h2>
+    <p class="muted small">Used for the 3a reminders (how much is left this year). A statement upload can fill in the year's total.</p>
+    <form id="contribution-form" class="row">
+      <label>Date <input type="date" name="day" value="${today}" required></label>
+      <label>Amount (CHF) <input type="number" step="0.01" min="0.01" name="amount" required></label>
+      <button class="primary">Add</button>
+    </form>
+    ${list.length ? `<div class="table-wrap"><table><tbody>${list.map((c) => `<tr><td>${esc(shortDate(c.day))}</td>
+      <td class="num">${esc(money(c.amount, "CHF", 2))}</td>
+      <td class="muted small">${c.source === "upload" ? "year total from statement" : "payment"}${c.note ? " · " + esc(c.note) : ""}</td>
+      <td class="num"><button class="link danger" data-del-contribution="${c.id}">Delete</button></td></tr>`).join("")}</tbody></table></div>` : ""}`;
+  $("#contribution-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await api(`/api/accounts/${a.id}/contributions`, { method: "POST", body: { day: e.target.day.value, amount: Number(e.target.amount.value) } });
+    toast("Payment added");
+    renderContributions(a, today);
+    updateTasksBadge();
+  });
+  box.querySelectorAll("[data-del-contribution]").forEach((b) => b.addEventListener("click", async () => {
+    await api(`/api/contributions/${b.dataset.delContribution}`, { method: "DELETE" });
+    renderContributions(a, today);
   }));
 }
 
@@ -734,6 +772,8 @@ function foundBlock(f, i, bank) {
         ${accountOptions(f.account_id)}</select></label>
       <label data-new-only>Name of new account <input name="new_name" value="${esc(f.name)}" maxlength="80"></label>
       <label>Balance${f.currency ? ` (${esc(f.currency)})` : ""} <input type="number" step="0.01" name="balance" value="${f.balance ?? ""}"></label>
+      ${f.contributions_ytd != null ? `<label>Paid in this year (CHF) <input type="number" step="0.01" name="contributions_ytd" value="${f.contributions_ytd}"></label>` : ""}
+      ${f.pillar2_buyin != null ? `<label>Buy-in potential (CHF) <input type="number" step="1" name="pillar2_buyin" value="${f.pillar2_buyin}"></label>` : ""}
     </div>
     ${positions.length ? `<div class="positions-review">
       <div class="table-wrap"><table class="review">
@@ -871,6 +911,10 @@ function wireUpload(u) {
           const f = found[Number(block.dataset.found)];
           const bal = $("[name=balance]", block).value;
           const item = { balance: bal === "" ? null : Number(bal), positions: reviewedPositions(block, f), replace_holdings: false };
+          for (const field of ["contributions_ytd", "pillar2_buyin"]) {
+            const v = $(`[name=${field}]`, block)?.value;
+            if (v) item[field] = Number(v);
+          }
           if ($("[name=target]", block).value === "new") {
             if (!bank) throw new Error("Enter the bank for the new account");
             const hasQuantities = item.positions.length > 0;
@@ -891,6 +935,7 @@ function wireUpload(u) {
         const r = await api(`/api/uploads/${u.id}/apply`, { method: "POST", body: { as_of: $("[name=as_of]", card).value, items } });
         toast([`Saved ${items.length} account${items.length > 1 ? "s" : ""}`, ...r.notes, ...r.errors].join(". "));
         state.accounts = await api("/api/accounts");
+        updateTasksBadge();
       }
       loadUploads();
     } catch (err) {
@@ -900,16 +945,159 @@ function wireUpload(u) {
   });
 }
 
+// --- insights: tasks, pillar 2/3a, weekly briefing ------------------------------------
+
+const CATEGORY_LABELS = { pillar3a: "Pillar 3a", pillar2: "Pillar 2", portfolio: "Portfolio" };
+const STANCE_LABELS = { buy: "Buy", hold: "Hold", reduce: "Reduce", watch: "Watch" };
+
+async function updateTasksBadge() {
+  const t = await api("/api/tasks");
+  const badge = $("#tasks-count");
+  badge.textContent = t.open.length;
+  badge.hidden = !t.open.length;
+  return t;
+}
+
+async function loadInsights() {
+  const [tasks] = await Promise.all([updateTasksBadge(), loadPension(), loadBriefing()]);
+  renderTasks(tasks);
+}
+
+function renderTasks(t) {
+  const item = (task) => `<li class="task" data-task="${task.id}">
+      <div class="task-head"><span class="chip chip-${esc(task.category)}">${esc(CATEGORY_LABELS[task.category] || task.category)}</span>
+        <strong>${esc(task.title)}</strong></div>
+      <p class="small">${esc(task.body)}</p>
+      ${task.status === "snoozed"
+        ? `<div class="actions small"><span class="muted">Reminds you on ${esc(shortDate(task.snooze_until))}</span>
+            <button class="link" data-task-act="open">Show now</button></div>`
+        : `<div class="actions"><button class="ghost" data-task-act="done">Done</button>
+            <label class="snooze">Remind me
+              <select data-task-snooze aria-label="Remind me later">
+                <option value="">…</option><option value="7">in 1 week</option><option value="30">in 1 month</option>
+                <option value="91">in 3 months</option><option value="182">in 6 months</option></select></label>
+            <button class="link" data-task-act="dismissed">Not relevant</button></div>`}
+    </li>`;
+  $("#tasks").innerHTML = (t.open.length ? `<ul class="tasks">${t.open.map(item).join("")}</ul>` : `<div class="empty">Nothing to do right now.</div>`)
+    + (t.snoozed.length ? `<details class="snoozed"><summary>${t.snoozed.length} snoozed</summary><ul class="tasks">${t.snoozed.map(item).join("")}</ul></details>` : "");
+}
+
+async function taskAction(id, body) {
+  await api(`/api/tasks/${id}`, { method: "POST", body });
+  renderTasks(await updateTasksBadge());
+}
+
+$("#tasks").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-task-act]");
+  if (b) taskAction(b.closest("[data-task]").dataset.task, { action: b.dataset.taskAct }).catch((err) => toast(err.message));
+});
+$("#tasks").addEventListener("change", (e) => {
+  const sel = e.target.closest("[data-task-snooze]");
+  if (sel?.value) taskAction(sel.closest("[data-task]").dataset.task, { action: "snooze", days: Number(sel.value) })
+    .then(() => toast("Snoozed")).catch((err) => toast(err.message));
+});
+
+async function loadPension() {
+  const people = await api("/api/pension");
+  const rows = people.filter((p) => p.has_3a || p.has_pillar2);
+  $("#pension").innerHTML = rows.length ? rows.map((p) => {
+    const pct3a = p.max_3a ? Math.min(p.paid_3a / p.max_3a, 1) : null;
+    return `<div class="pension-row">
+      <div class="pension-name"><strong>${esc(p.name)}</strong>
+        <span class="muted small">${p.birth_year ? `age ${p.year - p.birth_year}` : "age unknown"}
+          · ${p.has_pension_fund === 1 ? "employed with pension fund" : p.has_pension_fund === 0 ? "no pension fund" : "employment unknown"}</span></div>
+      ${p.has_3a ? `<div><div class="muted small">Pillar 3a ${p.year}</div>
+        ${pct3a != null ? `<div class="meter" role="img" aria-label="${Math.round(pct3a * 100)}% of the maximum paid"><span style="width:${pct3a * 100}%"></span></div>
+          <div class="small">${esc(money(p.paid_3a, "CHF"))} of ${esc(money(p.max_3a, "CHF"))} · <strong>${esc(money(p.room_3a, "CHF"))} left</strong></div>`
+          : `<div class="small">${esc(money(p.paid_3a, "CHF"))} paid · limit depends on income</div>`}</div>` : ""}
+      ${p.has_pillar2 ? `<div><div class="muted small">Pillar 2 buy-in potential</div>
+        <div class="small">${p.pillar2_buyin != null ? `<strong>${esc(money(p.pillar2_buyin, "CHF"))}</strong>${p.pillar2_buyin_as_of ? ` <span class="muted">as of ${esc(shortDate(p.pillar2_buyin_as_of))}</span>` : ""}`
+          : `<span class="muted">unknown, upload the pension certificate</span>`}</div></div>` : ""}
+    </div>`;
+  }).join("") : `<div class="empty">No pillar 2 or 3a accounts yet.</div>`;
+}
+
+let briefingPoll;
+async function loadBriefing() {
+  const b = await api("/api/briefing");
+  const box = $("#briefing");
+  $("#write-briefing").disabled = b.running;
+  $("#write-briefing").textContent = b.running ? "Writing…" : "Write now";
+  clearTimeout(briefingPoll);
+  if (b.running && !$("#tab-insights").hidden) briefingPoll = setTimeout(loadBriefing, 8000);
+  const status = b.running ? `<p class="muted small">Claude is researching this week's news and writing the briefing; this takes a few minutes.</p>`
+    : b.last_error ? `<p class="error small">The last attempt failed: ${esc(b.last_error)}</p>` : "";
+  if (!b.briefing) {
+    box.innerHTML = status || `<div class="empty">No briefing yet. The first one is written on Monday, or click <em>Write now</em>.</div>`;
+    return;
+  }
+  const x = b.briefing;
+  const notes = (list) => `<ul class="notes-list">${list.map((n) => `<li><strong>${esc(n.title)}.</strong> ${esc(n.detail)}</li>`).join("")}</ul>`;
+  box.innerHTML = `${status}
+    <div class="muted small">Week ${esc(b.week.split("-W")[1])} · written ${esc(shortDate(b.created_at.slice(0, 10)))}</div>
+    <h3 class="headline">${esc(x.headline)}</h3>
+    <p>${esc(x.summary)}</p>
+    <h4>Market</h4>${notes(x.market)}
+    <h4>Your positions</h4>
+    <div class="table-wrap"><table class="stances"><tbody>${x.positions.map((p) => `<tr>
+      <td><span class="stance stance-${esc(p.stance)}">${esc(STANCE_LABELS[p.stance])}</span></td>
+      <td><strong>${esc(p.name)}</strong>${p.symbol ? ` <span class="muted small">${esc(p.symbol)}</span>` : ""}
+        <div class="small">${esc(p.reasoning)}</div></td></tr>`).join("")}</tbody></table></div>
+    <h4>To consider</h4>${notes(x.considerations)}
+    ${b.sources?.length ? `<details class="small sources"><summary>${b.sources.length} sources</summary><ul>${b.sources.map((s) =>
+      `<li><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></li>`).join("")}</ul></details>` : ""}`;
+}
+
+$("#write-briefing").addEventListener("click", async () => {
+  try {
+    await api("/api/briefing", { method: "POST" });
+    toast("Writing the briefing; this takes a few minutes");
+    loadBriefing();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
 // --- family -------------------------------------------------------------------------
 
 async function loadFamily() {
   await loadMe();
-  $("#family-list").innerHTML = state.family.map((u) =>
-    `<li><strong>${esc(u.name)}</strong> <span class="muted small">${esc(u.username)}${u.id === state.me.id ? " · you" : ""}
-      ${u.has_upload_token ? " · Shortcut set up" : ""}</span></li>`).join("");
+  const profiles = Object.fromEntries((await api("/api/pension")).map((p) => [p.user_id, p]));
+  $("#family-list").innerHTML = state.family.map((u) => {
+    const p = profiles[u.id] || {};
+    return `<li><strong>${esc(u.name)}</strong> <span class="muted small">${esc(u.username)}${u.id === state.me.id ? " · you" : ""}
+      ${u.has_upload_token ? " · Shortcut set up" : ""}</span>
+      <form class="form-grid profile-form" data-user="${u.id}">
+        <label>Year of birth <input name="birth_year" type="number" min="1920" max="2020" value="${p.birth_year ?? ""}"></label>
+        <label>Employment <select name="has_pension_fund">
+          <option value="" ${p.has_pension_fund == null ? "selected" : ""}>Unknown</option>
+          <option value="1" ${p.has_pension_fund === 1 ? "selected" : ""}>Employed, with pension fund</option>
+          <option value="0" ${p.has_pension_fund === 0 ? "selected" : ""}>No pension fund (e.g. self-employed)</option></select></label>
+        <label>Pillar 2 buy-in potential (CHF) <input name="pillar2_buyin" type="number" step="1" min="0" value="${p.pillar2_buyin ?? ""}"
+          placeholder="from the pension certificate"></label>
+        <button class="ghost">Save</button>
+      </form></li>`;
+  }).join("");
   $("#upload-url").textContent = `${location.origin}/api/upload`;
   $("#new-upload-token").textContent = state.me.has_upload_token ? "Replace my upload token" : "Create my upload token";
 }
+
+$("#family-list").addEventListener("submit", async (e) => {
+  const f = e.target.closest(".profile-form");
+  if (!f) return;
+  e.preventDefault();
+  const num = (v) => (v === "" ? null : Number(v));
+  const body = { birth_year: num(f.birth_year.value), pillar2_buyin: num(f.pillar2_buyin.value),
+    has_pension_fund: f.has_pension_fund.value === "" ? null : f.has_pension_fund.value === "1" };
+  if (body.pillar2_buyin != null) body.pillar2_buyin_as_of = new Date().toISOString().slice(0, 10);
+  try {
+    await api(`/api/users/${f.dataset.user}`, { method: "PATCH", body });
+    toast("Saved");
+    updateTasksBadge();
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 $("#member-form").addEventListener("submit", async (e) => {
   e.preventDefault();

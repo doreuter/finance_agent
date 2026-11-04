@@ -16,6 +16,25 @@ one person or is joint.
 Every upload waits in the **Inbox** until you click *Save to account*: nothing from a file is booked without review.
 A statement that lists fund positions (e.g. a Neon Invest PDF) can replace the depot's positions; tickers are looked up by ISIN.
 
+## Insights: reminders and the weekly briefing
+
+The **Insights** tab collects what is worth acting on:
+
+- **To do:** reminders from fixed rules for pillar 3a (pay in early in the year, the 31 December deadline,
+  catching up a missed year since 2025) and pillar 2 (upload the pension certificate, consider a buy-in
+  from September), plus portfolio actions suggested by the briefing. Each can be marked done, snoozed
+  (1 week to 6 months) or dismissed; a snoozed one comes back on its date. The 3a limits live in
+  `app/advice.py` (`THREE_A_MAX`); add each new year there.
+- **Pillar 2 & 3a:** per person, how much of this year's 3a maximum is paid and the pillar 2 buy-in
+  potential. Fill in year of birth and employment under **Family**; 3a payments under **Accounts** (or a
+  VIAC statement upload fills in the year's total; the AXA certificate fills in the buy-in potential).
+- **Weekly briefing:** every Monday Claude searches the web for the week's news on the holdings and the
+  market, then writes a view per position (buy / hold / reduce / watch, with reasoning for a long-term
+  horizon), points to consider, and up to three portfolio tasks. About $0.50-1 per briefing.
+  `WEEKLY_BRIEFING=0` turns the automatic run off; *Write now* runs it on demand.
+
+The briefing is information to support your own decisions, not financial advice.
+
 ## Run locally
 
 ```bash
@@ -67,4 +86,4 @@ Then: screenshot in the VIAC or Neon app → Share → *To FinanceAgent*. The it
 ## Next steps
 
 - Phase 2: DKB automatically via FinTS (`python-fints`).
-- Phase 3: daily digest — news about the holdings and a short summary by email/Telegram.
+- Briefing by email.

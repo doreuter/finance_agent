@@ -180,7 +180,13 @@ td.indent { padding-left: 14px; }
   background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; max-width: calc(100% - 32px);
 }
 
+nav button { white-space: nowrap; }
 @media (max-width: 720px) {
+  /* five tabs don't fit a phone: the tab row scrolls sideways instead of widening the page */
+  .top { flex-wrap: nowrap; flex-direction: column; align-items: stretch; gap: 6px; padding-bottom: 8px; }
+  nav { overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
+  nav::-webkit-scrollbar { display: none; }
+  nav button { padding: 6px 10px; }
   .accounts-layout { grid-template-columns: minmax(0, 1fr); }
   .hero-number { font-size: 30px; }
   .hide-sm { display: none; }
@@ -243,3 +249,42 @@ dialog#quote-dialog::backdrop { background: rgb(0 0 0 / .4); }
 .review select[name=pos_replaces] { min-width: 150px; max-width: 220px; }
 .bank-row th.up { color: var(--good); }
 .bank-row th.down { color: var(--danger); }
+
+/* insights */
+.tasks { list-style: none; margin: 0; padding: 0; }
+.task { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.task:last-child { border-bottom: 0; }
+.task p { margin: 6px 0 0; color: var(--text-2); }
+.task .actions { margin-top: 8px; }
+.task-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); white-space: nowrap; }
+.chip-pillar3a { border-color: var(--kind-pillar3a); }
+.chip-pillar2 { border-color: var(--kind-pillar2); }
+.chip-portfolio { border-color: var(--kind-depot); }
+.snooze { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 14px; color: var(--text-2); }
+.snooze select { width: auto; padding: 4px 6px; }
+.snoozed { margin-top: 8px; }
+.snoozed summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+.pension-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 10px 0;
+  border-bottom: 1px solid var(--border); align-items: start; }
+.pension-row:last-child { border-bottom: 0; }
+.pension-name { display: grid; gap: 2px; }
+.meter { height: 8px; border-radius: 4px; background: var(--grid); overflow: hidden; margin: 4px 0; }
+.meter span { display: block; height: 100%; background: var(--kind-pillar3a); border-radius: 4px; }
+.disclaimer { background: var(--warn-bg); color: var(--warn-ink); border-radius: 8px; padding: 8px 10px; margin: 0 0 12px; }
+.headline { font-size: 18px; margin: 6px 0 6px; }
+#briefing h4 { margin: 18px 0 6px; font-size: 14px; color: var(--text-2); }
+.notes-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.stances td { vertical-align: top; }
+.stance { display: inline-block; min-width: 64px; text-align: center; font-size: 12px; font-weight: 700; padding: 2px 8px;
+  border-radius: 6px; border: 1px solid currentColor; }
+.stance-buy { color: var(--good); }
+.stance-reduce { color: var(--danger); }
+.stance-watch { color: var(--warn-ink); background: var(--warn-bg); border-color: transparent; }
+.stance-hold { color: var(--text-2); }
+.sources { margin-top: 14px; }
+.sources ul { padding-left: 18px; }
+.profile-form { margin: 8px 0 4px; }
+@media (max-width: 720px) {
+  .pension-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+}

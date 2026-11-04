@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FinanceAgent</title>
-  <link rel="stylesheet" href="styles.css?v=7">
+  <link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body>
   <header class="top">
@@ -12,6 +12,7 @@
     <nav>
       <button data-tab="overview" class="active">Overview</button>
       <button data-tab="accounts">Accounts</button>
+      <button data-tab="insights">Insights <span id="tasks-count" class="badge" hidden></span></button>
       <button data-tab="inbox">Inbox <span id="inbox-count" class="badge" hidden></span></button>
       <button data-tab="family">Family</button>
     </nav>
@@ -126,6 +127,23 @@
       <div id="uploads"></div>
     </section>
 
+    <section id="tab-insights" class="tab" hidden>
+      <div class="card">
+        <h2>To do</h2>
+        <div id="tasks"></div>
+      </div>
+      <div class="card">
+        <div class="upload-head"><h2>Pillar 2 &amp; 3a</h2><button class="link small" data-goto="family">Edit profiles</button></div>
+        <div id="pension"></div>
+      </div>
+      <div class="card">
+        <div class="upload-head"><h2>Weekly briefing</h2><button id="write-briefing" class="ghost">Write now</button></div>
+        <p class="disclaimer small">Written by Claude from current news and your portfolio, every Monday. It is information to
+          support your own decisions, not financial advice: check it before acting, and consider a licensed advisor for larger steps.</p>
+        <div id="briefing"></div>
+      </div>
+    </section>
+
     <section id="tab-family" class="tab" hidden>
       <div class="card">
         <h2>Family</h2>
@@ -186,6 +204,6 @@
   <datalist id="bank-options"></datalist>
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>
