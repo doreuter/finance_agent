@@ -241,3 +241,5 @@ dialog#quote-dialog::backdrop { background: rgb(0 0 0 / .4); }
 #quote-position { margin-top: 10px; color: var(--text-2); }
 #tooltip { z-index: 1000; }
 .review select[name=pos_replaces] { min-width: 150px; max-width: 220px; }
+.bank-row th.up { color: var(--good); }
+.bank-row th.down { color: var(--danger); }

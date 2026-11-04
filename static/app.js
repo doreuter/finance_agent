@@ -287,21 +287,37 @@ function renderPortfolio(p) {
   const cur = p.base_currency;
   const day = p.day_change_base;
   $("#holdings-sub").textContent = `${money(p.total, cur)}${day != null ? ` · today ${day >= 0 ? "+" : "−"}${money(Math.abs(day), cur)}` : ""}`;
-  const several = new Set(p.positions.map((x) => x.account + x.owner_id)).size > 1;
-  $("#holdings").innerHTML = `<div class="table-wrap"><table class="holdings">
-    <thead><tr><th>Position</th><th class="num hide-sm">Quantity</th><th class="num hide-sm">Price</th>
-      <th class="num">${esc(cur)}</th><th class="num">Share</th><th class="num">Today</th></tr></thead>
-    <tbody>${p.positions.map((x) => `<tr>
-      <td>${x.symbol ? `<button class="link position-link" data-quote="${x.id}">${esc(x.name)}</button>` : esc(x.name)}
+  const signed = (v) => (v == null ? "" : `${v >= 0 ? "+" : "−"}${money(Math.abs(v), null)}`);
+  // One group per bank, largest first; inside, positions stay sorted by value (as the server sends them).
+  const banks = groupByBank(p.positions).map(([bank, list]) => {
+    const total = list.reduce((sum, x) => sum + (x.value_base ?? 0), 0);
+    const moves = list.filter((x) => x.day_change_base != null);
+    return { bank, list, total, day: moves.length ? moves.reduce((sum, x) => sum + x.day_change_base, 0) : null,
+      accounts: new Set(list.map((x) => `${x.account}|${x.owner_id}`)).size };
+  }).sort((a, b) => b.total - a.total);
+  const row = (x, showAccount) => `<tr>
+      <td class="indent">${x.symbol ? `<button class="link position-link" data-quote="${x.id}">${esc(x.name)}</button>` : esc(x.name)}
         <div class="muted small">${esc([x.symbol, x.value_only ? "value from statement" : "",
-          several ? `${x.account}${state.owner === "all" ? " · " + ownerName(x.owner_id) : ""}` : ""].filter(Boolean).join(" · "))}</div>
+          showAccount ? `${x.account}${state.owner === "all" ? " · " + ownerName(x.owner_id) : ""}` : ""].filter(Boolean).join(" · "))}</div>
         ${x.problem ? `<div class="warn">${esc(x.problem)}</div>` : ""}</td>
       <td class="num hide-sm">${esc(quantity(x.quantity))}</td>
       <td class="num hide-sm">${x.price == null ? "–" : esc(money(x.price, x.price_currency, 2))}</td>
       <td class="num">${esc(money(x.value_base, null))}</td>
       <td class="num"><span class="share-bar" style="--w:${Math.round((x.share || 0) * 100)}%"></span>${x.share != null ? Math.round(x.share * 100) + "%" : "–"}</td>
-      <td class="num ${x.day_change > 0 ? "up" : x.day_change < 0 ? "down" : "muted"}">${esc(pct(x.day_change))}</td></tr>`).join("")}
-    </tbody></table></div>`;
+      <td class="num ${x.day_change > 0 ? "up" : x.day_change < 0 ? "down" : "muted"}">${esc(pct(x.day_change))}</td></tr>`;
+  $("#holdings").innerHTML = `<div class="table-wrap"><table class="holdings">
+    <thead><tr><th>Position</th><th class="num hide-sm">Quantity</th><th class="num hide-sm">Price</th>
+      <th class="num">${esc(cur)}</th><th class="num">Share</th><th class="num">Today</th></tr></thead>
+    ${banks.map((g) => {
+      // a bank with one depot names it in the header; with several, each position names its account
+      const single = g.accounts === 1 ? g.list[0] : null;
+      const label = single ? `${g.bank} · ${single.account}${state.owner === "all" && state.family.length > 1 ? " · " + ownerName(single.owner_id) : ""}` : g.bank;
+      return `<tbody><tr class="bank-row"><th>${esc(label)}</th><th class="hide-sm"></th><th class="hide-sm"></th>
+          <th class="num">${esc(money(g.total, null))}</th><th class="num">${p.total ? Math.round((g.total / p.total) * 100) + "%" : ""}</th>
+          <th class="num ${g.day > 0 ? "up" : g.day < 0 ? "down" : ""}">${esc(signed(g.day))}</th></tr>
+        ${g.list.map((x) => row(x, !single)).join("")}</tbody>`;
+    }).join("")}
+    </table></div>`;
 }
 
 // --- position pop-up: price chart from Yahoo Finance --------------------------------------
