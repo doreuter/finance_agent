@@ -1134,8 +1134,20 @@ $("#new-upload-token").addEventListener("click", async () => {
   const r = await api("/api/me/upload-token", { method: "POST" });
   const out = $("#upload-token-out");
   out.hidden = false;
-  out.innerHTML = `Your token (shown only now; copy it into the Shortcut): <code class="token">${esc(r.token)}</code>`;
+  out.innerHTML = `<div class="muted">Your token, shown only now:</div>
+    <div class="copy-row"><code class="token" id="upload-token">${esc(r.token)}</code><button class="link" data-copy="#upload-token">Copy</button></div>`;
   loadFamily();
+});
+
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-copy]");
+  if (!b) return;
+  try {
+    await navigator.clipboard.writeText($(b.dataset.copy).textContent.trim());
+    toast("Copied");
+  } catch {
+    toast("Copy failed; select the text and copy it");
+  }
 });
 
 $("#password-form").addEventListener("submit", async (e) => {

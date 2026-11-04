@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FinanceAgent</title>
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body>
   <header class="top">
@@ -162,11 +162,18 @@
       </div>
       <div class="card">
         <h2>iPhone Shortcut</h2>
-        <p class="small">Send screenshots and statements to the Inbox from the share sheet. In the Shortcuts app:
-          <em>Get Contents of URL</em> → <code id="upload-url"></code>, method POST,
-          header <code>Authorization</code> = <code>Bearer &lt;your token&gt;</code>, request body Form, field <code>file</code> = Shortcut Input.</p>
-        <div class="actions"><button id="new-upload-token" class="ghost">Create my upload token</button></div>
-        <p id="upload-token-out" class="small" hidden></p>
+        <p class="small">Send screenshots, photos and PDFs to the Inbox from any app: Share → <strong>To FinanceAgent</strong>.
+          Set it up once, on your iPhone:</p>
+        <ol class="steps small">
+          <li><button id="new-upload-token" class="ghost">Create my upload token</button>
+            <div id="upload-token-out" hidden></div></li>
+          <li><a class="ghost button-link" href="/FinanceAgent.shortcut" download>Install the Shortcut</a>
+            <span class="muted">opens Shortcuts; tap <em>Add Shortcut</em></span></li>
+          <li>When Shortcuts asks, paste the upload address and your token:
+            <div class="copy-row"><code id="upload-url"></code><button class="link" data-copy="#upload-url">Copy</button></div></li>
+        </ol>
+        <p class="muted small">Then: take a screenshot in the Neon, VIAC or DKB app → Share → To FinanceAgent. The token can only
+          upload; if you lose your phone, create a new one here and the old one stops working.</p>
       </div>
       <div class="card">
         <h2>My password</h2>
@@ -208,6 +215,6 @@
   <datalist id="bank-options"></datalist>
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=11"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>

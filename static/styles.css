@@ -288,3 +288,8 @@ dialog#quote-dialog::backdrop { background: rgb(0 0 0 / .4); }
 @media (max-width: 720px) {
   .pension-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
 }
+
+.steps { padding-left: 20px; display: grid; gap: 12px; margin: 10px 0; }
+.steps li > .ghost { margin-right: 6px; }
+.copy-row { display: flex; gap: 8px; align-items: center; margin-top: 6px; min-width: 0; }
+.copy-row code { overflow-wrap: anywhere; min-width: 0; }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import io
 import shutil
 import sqlite3
 import tempfile
@@ -40,7 +41,7 @@ MAX_UPLOADS_PER_HOUR = 30
 MAX_RETRIES_PER_HOUR = 10
 MAX_BRIEFINGS_PER_DAY = 3
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-SUFFIX_TYPES = {".csv": "text/csv", ".txt": "text/plain", ".pdf": "application/pdf",
+SUFFIX_TYPES = {".heic": "image/heic", ".heif": "image/heif", ".csv": "text/csv", ".txt": "text/plain", ".pdf": "application/pdf",
                 ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 
 
@@ -89,18 +90,15 @@ SECURITY_HEADERS = {
 
 @app.middleware("http")
 async def require_login(request: Request, call_next):
-    """Every API call needs a signed-in family member: the session cookie (browser), or a personal
-    upload token as bearer header, which only works for uploads (iPhone Shortcut)."""
+    """Every API call needs a signed-in family member (session cookie). Uploads may instead carry a
+    personal upload token (iPhone Shortcut); the upload route checks that itself, see _uploader()."""
     path = request.url.path
     request.state.user = None
     if path.startswith("/api/") and request.method in UNSAFE_METHODS and _cross_site(request):
         return JSONResponse({"detail": "cross-site request refused"}, status_code=403)
     if path.startswith("/api/") and path not in OPEN_PATHS:
         user = auth.user_for_session(request.cookies.get(auth.SESSION_COOKIE, ""))
-        header = request.headers.get("authorization", "")
-        if user is None and header.lower().startswith("bearer ") and path == "/api/upload" and request.method == "POST":
-            user = auth.user_for_upload_token(header[7:].strip())
-        if user is None:
+        if user is None and not (path == "/api/upload" and request.method == "POST"):
             return JSONResponse({"detail": "login required"}, status_code=401)
         request.state.user = user
     response = await call_next(request)
@@ -665,6 +663,23 @@ def _media_type(file: UploadFile) -> str:
     return (file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream").split(";")[0]
 
 
+def _heic_to_jpeg(data: bytes, max_side: int = 2400) -> bytes:
+    """An iPhone photo as JPEG, at most `max_side` pixels, which is plenty to read numbers and stays well
+    under the size Claude accepts for an image."""
+    import pillow_heif
+    from PIL import Image, ImageOps
+
+    pillow_heif.register_heif_opener()
+    try:
+        image = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    except Exception:
+        raise HTTPException(415, "Couldn't read that photo; send a screenshot (PNG) or JPEG instead")
+    image.thumbnail((max_side, max_side))
+    out = io.BytesIO()
+    image.save(out, "JPEG", quality=88)
+    return out.getvalue()
+
+
 def _stored_file(u: dict) -> Path:
     """The upload's file, which must lie in the uploads folder (a crafted database import could point
     anywhere, e.g. at /proc/self/environ)."""
@@ -678,23 +693,52 @@ def _recent(conn, sql: str, *args) -> int:
     return db.row(conn, sql, *args)["n"]
 
 
+def _clean_token(value: str) -> str:
+    """What people paste: "Bearer fa_…", just "fa_…", with quotes, spaces or a line break."""
+    value = value.strip()
+    if value.lower().startswith("bearer"):
+        value = value[6:]
+    return value.strip().strip('"\'').strip()
+
+
+def _uploader(request: Request, form_token: str) -> dict:
+    """The signed-in user (browser) or the owner of the upload token (Shortcut: Authorization header or a
+    form field 'token'), with an error that says what is wrong instead of just 'login required'."""
+    if request.state.user:
+        return request.state.user
+    token = _clean_token(request.headers.get("authorization", "")) or _clean_token(form_token)
+    if not token:
+        raise HTTPException(401, "No upload token sent. In the Shortcut, the header Authorization must be "
+                                 "'Bearer <your token>'. Create the token in FinanceAgent under Family.")
+    user = auth.user_for_upload_token(token)
+    if user is None:
+        logger.warning("upload with an unknown token from %s", auth.client_ip(request))
+        raise HTTPException(401, f"Upload token not recognised (the one sent ends in …{token[-4:]}). It may be "
+                                 "old or from another FinanceAgent: create a new one under Family → iPhone Shortcut "
+                                 "and paste it into the Shortcut.")
+    return user
+
+
 @app.post("/api/upload")
-async def upload(file: UploadFile, background: BackgroundTasks, request: Request):
+async def upload(file: UploadFile, background: BackgroundTasks, request: Request, token: str = Form("", max_length=200)):
     """Accepts a screenshot, PDF statement or CSV (from the web page or the iPhone Shortcut); Claude reads it
     in the background and the result waits in the inbox for review."""
+    request.state.user = _uploader(request, token)
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty file")
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "file too large (max 20 MB)")
     media_type = _media_type(file)
+    name = Path(file.filename or "upload").name
+    if media_type in ("image/heic", "image/heif"):  # iPhone photos; Claude reads JPEG
+        data, media_type, name = _heic_to_jpeg(data), "image/jpeg", Path(name).stem + ".jpg"
     if media_type not in UPLOAD_TYPES:
         raise HTTPException(415, "Upload a PNG/JPEG/WebP screenshot, a PDF or a CSV file")
     with db.connect() as conn:
         if _recent(conn, "SELECT COUNT(*) AS n FROM uploads WHERE user_id = ? AND created_at > datetime('now', '-1 hour')",
                    _user(request)["id"]) >= MAX_UPLOADS_PER_HOUR:
             raise HTTPException(429, f"At most {MAX_UPLOADS_PER_HOUR} uploads an hour; try again later")
-    name = Path(file.filename or "upload").name
     stored = db.uploads_dir() / f"{date.today().isoformat()}-{secrets.token_hex(4)}-{name}"
     stored.parent.mkdir(parents=True, exist_ok=True)
     stored.write_bytes(data)

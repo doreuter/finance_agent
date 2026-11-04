@@ -697,3 +697,51 @@ def test_briefing_sources_are_web_links_only(monkeypatch):
     client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: Stream()))
     memo, sources = briefing._research(client, {"today": "2026-11-04", "positions": []})
     assert sources == [{"url": "https://ok.example/a", "title": "ok"}]
+
+
+def test_iphone_photos_are_converted_to_jpeg(client):
+    import io
+    import pillow_heif
+    from PIL import Image
+    pillow_heif.register_heif_opener()
+    buf = io.BytesIO()
+    Image.new("RGB", (4032, 3024), (20, 120, 200)).save(buf, format="HEIF")
+    r = client.post("/api/upload", files={"file": ("IMG_0042.HEIC", buf.getvalue(), "image/heic")})
+    assert r.status_code == 200, r.text
+    u = client.get("/api/uploads").json()[0]
+    assert u["filename"] == "IMG_0042.jpg" and u["media_type"] == "image/jpeg"
+    jpeg = client.get(f"/api/uploads/{u['id']}/file").content
+    assert jpeg[:3] == b"\xff\xd8\xff" and max(Image.open(io.BytesIO(jpeg)).size) == 2400
+    assert client.post("/api/upload", files={"file": ("broken.heic", b"not a photo", "image/heic")}).status_code == 415
+
+
+def test_the_signed_shortcut_can_be_downloaded(anon):
+    r = anon.get("/FinanceAgent.shortcut")
+    assert r.status_code == 200 and r.content[:4] == b"AEA1"  # Apple-signed archive; contains no secrets
+
+
+def test_shortcut_build_has_the_upload_request():
+    import sys
+    sys.path.insert(0, "scripts")
+    import make_shortcut
+    w = make_shortcut.build("https://x.example/api/upload", "fa_token")
+    actions = [a["WFWorkflowActionIdentifier"] for a in w["WFWorkflowActions"]]
+    assert actions == ["is.workflow.actions.gettext", "is.workflow.actions.gettext", "is.workflow.actions.repeat.each",
+                       "is.workflow.actions.downloadurl", "is.workflow.actions.notification", "is.workflow.actions.repeat.each"]
+    request = w["WFWorkflowActions"][3]["WFWorkflowActionParameters"]
+    assert request["WFHTTPMethod"] == "POST" and request["WFHTTPBodyType"] == "Form"
+    assert [q["DefaultValue"] for q in w["WFWorkflowImportQuestions"]] == ["https://x.example/api/upload", "fa_token"]
+
+
+def test_upload_token_is_accepted_however_it_is_pasted(client):
+    token = client.post("/api/me/upload-token").json()["token"]
+    client.post("/api/logout")
+    png = {"file": ("s.png", b"\x89PNG", "image/png")}
+    for header in [f"Bearer {token}", f"bearer {token}\n", token, f'Bearer "{token}"', f"  {token}  "]:
+        assert client.post("/api/upload", headers={"Authorization": header}, files=png).status_code == 200, repr(header)
+    assert client.post("/api/upload", data={"token": token}, files=png).status_code == 200  # form field
+    r = client.post("/api/upload", files=png)
+    assert r.status_code == 401 and "No upload token sent" in r.json()["detail"]
+    r = client.post("/api/upload", headers={"Authorization": "Bearer fa_old_token_abcd"}, files=png)
+    assert r.status_code == 401 and "ends in …abcd" in r.json()["detail"]
+    assert client.get("/api/uploads", headers={"Authorization": f"Bearer {token}"}).status_code == 401  # upload only
