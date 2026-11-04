@@ -91,7 +91,7 @@ def test_upload_extract_and_apply(client, monkeypatch):
     viac = make_account(client, name="VIAC 3a", institution="VIAC", kind="pillar3a")
     seen = {}
 
-    def fake_extract(path, media_type, accounts, uploaded_by=None):
+    def fake_extract(path, media_type, accounts, uploaded_by=None, **kw):
         seen["media_type"] = media_type
         seen["accounts"] = [(a["name"], a["owner"]) for a in accounts]
         seen["uploaded_by"] = uploaded_by
@@ -168,7 +168,7 @@ def test_apply_positions_looks_up_tickers_by_isin(client, monkeypatch):
 
 
 def test_failed_extraction_is_kept_for_retry(client, monkeypatch):
-    def boom(path, media_type, accounts, uploaded_by=None):
+    def boom(path, media_type, accounts, uploaded_by=None, **kw):
         raise extract.ExtractError("Claude API key missing or invalid: set ANTHROPIC_API_KEY in .env")
     monkeypatch.setattr(extract, "extract", boom)
     client.post("/api/upload", files={"file": ("s.pdf", b"%PDF-1.4", "application/pdf")})
@@ -555,3 +555,36 @@ def test_briefing_failure_is_recorded(client, monkeypatch):
         briefing.generate()
     b = client.get("/api/briefing").json()
     assert "API key" in b["last_error"] and not b["running"]
+
+
+def test_usage_is_recorded_with_cost(client):
+    from types import SimpleNamespace
+    from app import usage
+    usage.record("extract", "claude-haiku-5-5", SimpleNamespace(input_tokens=5000, output_tokens=1000))
+    usage.record("research", "claude-sonnet-5-5", SimpleNamespace(input_tokens=60000, output_tokens=5000,
+                                                                server_tool_use=SimpleNamespace(web_search_requests=15)))
+    usage.record("research", "claude-haiku-5-5", SimpleNamespace(input_tokens=150000, output_tokens=10000))
+    u = client.get("/api/usage").json()
+    by = {(r["task"], r["model"]): r for r in u["by_task"]}
+    assert by[("extract", "claude-haiku-5-5")]["cost_usd"] == pytest.approx(0.001)
+    assert by[("research", "claude-sonnet-5-5")]["cost_usd"] == pytest.approx(0.12 + 0.05 + 0.15)
+    assert by[("research", "claude-haiku-5-5")]["cost_usd"] == pytest.approx(0.075 + 0.025)  # long-prompt price
+    assert u["total_usd"] == pytest.approx(0.001 + 0.32 + 0.1)
+
+
+def test_model_per_task_can_be_overridden(monkeypatch):
+    from app import config
+    assert config.model_for("extract") == ("claude-haiku-5-5", "medium")
+    assert config.model_for("briefing") == ("claude-opus-5-5", "high")
+    monkeypatch.setenv("CLAUDE_MODEL_EXTRACT", "claude-sonnet-5-5")
+    assert config.model_for("extract")[0] == "claude-sonnet-5-5"
+
+
+def test_retry_reads_with_the_stronger_model(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(extract, "extract", lambda path, media_type, accounts, uploaded_by=None, task="extract":
+                        (seen.append(task), extract.Extraction())[1])
+    client.post("/api/upload", files={"file": ("s.png", b"\x89PNG", "image/png")})
+    upload_id = client.get("/api/uploads").json()[0]["id"]
+    client.post(f"/api/uploads/{upload_id}/retry")
+    assert seen == ["extract", "extract_retry"]

@@ -30,10 +30,25 @@ The **Insights** tab collects what is worth acting on:
   VIAC statement upload fills in the year's total; the AXA certificate fills in the buy-in potential).
 - **Weekly briefing:** every Monday Claude searches the web for the week's news on the holdings and the
   market, then writes a view per position (buy / hold / reduce / watch, with reasoning for a long-term
-  horizon), points to consider, and up to three portfolio tasks. About $0.50-1 per briefing.
+  horizon), points to consider, and up to three portfolio tasks. About $0.50 per briefing.
   `WEEKLY_BRIEFING=0` turns the automatic run off; *Write now* runs it on demand.
 
 The briefing is information to support your own decisions, not financial advice.
+
+## Claude models and cost
+
+Each task uses the cheapest model that does it well (`TASK_MODELS` in `app/config.py`), measured on real
+documents in November 2026:
+
+| Task | Model | Why | Cost |
+|---|---|---|---|
+| Reading an upload | Haiku 5.5 | Read a Neon screenshot exactly like Opus (5/5 positions, right account), 33× cheaper | ~$0.001 |
+| *Try again* on an upload | Opus 5.5 | A second reading after a failed or poor one; Sonnet missed the account match in the test | ~$0.05 |
+| Briefing: web research | Sonnet 5.5 | Input-heavy (search results); Haiku ran out of searches and left gaps | ~$0.32 (incl. $0.15 for 15 searches) |
+| Briefing: writing | Opus 5.5, effort high | The judgment you act on; small input, so the best model costs little | ~$0.14 |
+
+About $2 a month with weekly briefings. **Family → Claude usage** shows this month's cost per task.
+Override per task with e.g. `CLAUDE_MODEL_EXTRACT=claude-sonnet-5-5` or `CLAUDE_EFFORT_BRIEFING=medium`.
 
 ## Run locally
 

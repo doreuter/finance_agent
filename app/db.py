@@ -98,6 +98,16 @@ CREATE TABLE IF NOT EXISTS briefings (  -- the weekly market briefing
     error TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS llm_usage (  -- what each Claude call cost
+    id INTEGER PRIMARY KEY,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    task TEXT NOT NULL,          -- extract | extract_retry | research | briefing
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    web_searches INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL               -- NULL for a model without a known price
+);
 CREATE TABLE IF NOT EXISTS uploads (  -- statements, CSVs and screenshots waiting for review
     id INTEGER PRIMARY KEY,
     filename TEXT NOT NULL,

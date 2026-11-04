@@ -34,8 +34,25 @@ def anthropic_key() -> str:
     return os.environ.get("ANTHROPIC_API_KEY", "")
 
 
-def claude_model() -> str:
-    return os.environ.get("CLAUDE_MODEL") or "claude-opus-5-5"
+# Model and effort per task, chosen by value and cost (prices in app/usage.py):
+# - extract: reading balances and positions from a screenshot is transcription, and every result is
+#   reviewed in the inbox; the small model does it well at a fraction of the cost.
+# - extract_retry: "Try again" after a failed or poor reading uses a stronger model.
+# - research: the briefing's web research reads many search results (input-heavy); Sonnet is half Opus' price.
+# - briefing: the stances and considerations are the judgment the family acts on; small input, so Opus is cheap here.
+TASK_MODELS = {
+    "extract": ("claude-haiku-5-5", "medium"),
+    "extract_retry": ("claude-opus-5-5", "medium"),
+    "research": ("claude-sonnet-5-5", "medium"),
+    "briefing": ("claude-opus-5-5", "high"),
+}
+
+
+def model_for(task: str) -> tuple[str, str]:
+    """(model, effort) for a task; CLAUDE_MODEL_<TASK> / CLAUDE_EFFORT_<TASK> override, e.g. CLAUDE_MODEL_EXTRACT."""
+    model, effort = TASK_MODELS[task]
+    key = task.upper()
+    return os.environ.get(f"CLAUDE_MODEL_{key}") or model, os.environ.get(f"CLAUDE_EFFORT_{key}") or effort
 
 
 def refresh_hours() -> float:

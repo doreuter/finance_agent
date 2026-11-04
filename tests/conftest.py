@@ -14,7 +14,7 @@ def anon(tmp_path, monkeypatch):
     # No network in tests: price refreshes do nothing and Claude is never called unless a test stubs them.
     from app import auth, extract, prices
     monkeypatch.setattr(prices, "refresh", lambda symbols, currencies, base: [])
-    monkeypatch.setattr(extract, "extract", lambda path, media_type, accounts, uploaded_by=None: extract.Extraction())
+    monkeypatch.setattr(extract, "extract", lambda path, media_type, accounts, uploaded_by=None, **kw: extract.Extraction())
     auth.reset_login_limits()
     from app.main import app
     with TestClient(app) as c:

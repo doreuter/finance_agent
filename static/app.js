@@ -1079,7 +1079,24 @@ async function loadFamily() {
       </form></li>`;
   }).join("");
   $("#upload-url").textContent = `${location.origin}/api/upload`;
+  loadUsage();
   $("#new-upload-token").textContent = state.me.has_upload_token ? "Replace my upload token" : "Create my upload token";
+}
+
+const TASK_LABELS = { extract: "Reading uploads", extract_retry: "Reading again (stronger model)",
+  research: "Briefing: web research", briefing: "Briefing: writing" };
+
+async function loadUsage() {
+  const u = await api("/api/usage");
+  const usd = (v) => `$${(v || 0).toFixed(2)}`;
+  const month = new Date(u.month + "-01T00:00:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  $("#usage").innerHTML = `<p class="small">${esc(month)}: <strong>${usd(u.total_usd)}</strong>
+      <span class="muted">· each task uses the cheapest model that does it well</span></p>
+    ${u.by_task.length ? `<div class="table-wrap"><table><thead><tr><th>Task</th><th class="hide-sm">Model</th><th class="num">Calls</th>
+      <th class="num hide-sm">Searches</th><th class="num">Cost</th></tr></thead><tbody>${u.by_task.map((r) => `<tr>
+      <td>${esc(TASK_LABELS[r.task] || r.task)}</td><td class="hide-sm muted small">${esc(r.model.replace("claude-", ""))}</td>
+      <td class="num">${r.calls}</td><td class="num hide-sm">${r.web_searches || ""}</td><td class="num">${usd(r.cost_usd)}</td></tr>`).join("")}
+      </tbody></table></div>` : ""}`;
 }
 
 $("#family-list").addEventListener("submit", async (e) => {

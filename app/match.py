@@ -97,6 +97,31 @@ def _search(query: str, client: httpx.Client) -> list[str]:
         return []
 
 
+# Yahoo's search matches fund names literally; these are the usual short forms.
+ABBREVIATIONS = [(r"\bemerging markets?\b", "EM"), (r"\binformation technology\b", "IT"), (r"\bsmall cap\b", "SC")]
+
+
+def name_variants(name: str) -> list[str]:
+    """The name, its abbreviated form, and shorter prefixes, for when Yahoo finds nothing for the full name."""
+    out = [name]
+    short = name
+    for pattern, abbreviation in ABBREVIATIONS:
+        short = re.sub(pattern, abbreviation, short, flags=re.I)
+    if short != name:
+        out.append(short)
+    words = short.split()
+    out += [" ".join(words[:n]) for n in (4, 3) if len(words) > n]
+    return out
+
+
+def _search_name(name: str, client: httpx.Client, limit: int) -> list[str]:
+    for variant in name_variants(name):
+        found = _search(variant, client)[:limit]
+        if found:
+            return found
+    return []
+
+
 def candidates(p: dict, client: httpx.Client) -> list[str]:
     """Tickers to check, most likely first: shown ticker, ISIN lookup, Claude's hints, the name as shown."""
     out: list[str] = []
@@ -111,7 +136,7 @@ def candidates(p: dict, client: httpx.Client) -> list[str]:
         elif re.fullmatch(r"[A-Za-z0-9.\-^=]{1,15}", hint):  # looks like a ticker
             out += [hint.upper()] + _search(hint, client)[:2]
         elif hint:  # a name
-            out += _search(hint, client)[:6]
+            out += _search_name(hint, client, 6)
     if p.get("name"):
         out += _search(p["name"], client)[:4]
     seen: list[str] = []

@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import advice, auth, briefing, config, db, extract, match, prices, valuation
+from . import advice, auth, briefing, config, db, extract, match, prices, usage, valuation
 
 config.load_dotenv()
 logger = logging.getLogger("financeagent")
@@ -243,6 +243,12 @@ def change_password(body: PasswordChange, request: Request):
 def upload_token(request: Request):
     """A new personal token for the iPhone Shortcut; it is shown once, and the old one stops working."""
     return {"token": auth.new_upload_token(_user(request)["id"])}
+
+
+@app.get("/api/usage")
+def llm_usage():
+    """What Claude cost this month, per task and model."""
+    return usage.month_summary()
 
 
 @app.get("/api/backup")
@@ -590,14 +596,15 @@ def start_briefing(background: BackgroundTasks):
 
 # --- uploads (statements, CSVs, screenshots) ---------------------------------
 
-def _run_extraction(upload_id: int) -> None:
+def _run_extraction(upload_id: int, task: str = "extract") -> None:
     with db.connect() as conn:
         up = db.row(conn, "SELECT * FROM uploads WHERE id = ?", upload_id)
         accounts = db.rows(conn, "SELECT a.*, COALESCE(u.name, 'joint') AS owner FROM accounts a "
                                  "LEFT JOIN users u ON u.id = a.owner_id WHERE a.archived = 0")
         uploader = db.row(conn, "SELECT name FROM users WHERE id = ?", up["user_id"]) if up["user_id"] else None
     try:
-        result = extract.extract(Path(up["path"]), up["media_type"], accounts, uploader["name"] if uploader else None)
+        result = extract.extract(Path(up["path"]), up["media_type"], accounts, uploader["name"] if uploader else None,
+                                 task=task)
         # quantities from value / price, tickers checked against market prices
         status, payload, error = "pending", json.dumps(match.resolve_all(result.model_dump())), None
     except extract.ExtractError as e:
@@ -792,7 +799,7 @@ def retry_upload(upload_id: int, background: BackgroundTasks):
     with db.connect() as conn:
         _upload(conn, upload_id)
         conn.execute("UPDATE uploads SET status = 'reading', error = NULL WHERE id = ?", (upload_id,))
-    background.add_task(_run_extraction, upload_id)
+    background.add_task(_run_extraction, upload_id, "extract_retry")  # a second reading with the stronger model
     return {"ok": True}
 
 

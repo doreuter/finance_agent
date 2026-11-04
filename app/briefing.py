@@ -17,7 +17,7 @@ from typing import Literal
 import anthropic
 from pydantic import BaseModel, Field
 
-from . import advice, config, db, valuation
+from . import advice, config, db, usage, valuation
 
 logger = logging.getLogger("financeagent")
 MAX_CONTINUATIONS = 5  # pause_turn resumes of the research call
@@ -130,11 +130,13 @@ def _research(client: anthropic.Anthropic, data: dict) -> tuple[str, list[dict]]
     messages = [{"role": "user", "content": f"Today is {data['today']}. The holdings:\n{holdings}\n\n"
                                             "Research the past week for these holdings and the market."}]
     tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": MAX_SEARCHES}]
+    model, effort = config.model_for("research")
     response, content = None, []
     for _ in range(MAX_CONTINUATIONS + 1):
-        with client.messages.stream(model=config.claude_model(), max_tokens=16000, system=RESEARCH_SYSTEM,
-                                    messages=messages, tools=tools) as stream:
+        with client.messages.stream(model=model, max_tokens=16000, system=RESEARCH_SYSTEM, messages=messages,
+                                    tools=tools, output_config={"effort": effort}) as stream:
             response = stream.get_final_message()
+        usage.record("research", model, response.usage)
         if response.stop_reason == "refusal":
             raise BriefingError("Claude declined the research step")
         content += response.content
@@ -160,12 +162,14 @@ def _research(client: anthropic.Anthropic, data: dict) -> tuple[str, list[dict]]
 
 
 def _write(client: anthropic.Anthropic, data: dict, memo: str) -> Briefing:
+    model, effort = config.model_for("briefing")
     response = client.messages.parse(
-        model=config.claude_model(), max_tokens=16000, system=BRIEFING_SYSTEM,
+        model=model, max_tokens=16000, system=BRIEFING_SYSTEM, output_config={"effort": effort},
         messages=[{"role": "user", "content": f"<portfolio>\n{json.dumps(data, ensure_ascii=False, indent=1)}\n</portfolio>\n\n"
                                               f"<research>\n{memo}\n</research>\n\nWrite this week's briefing."}],
         output_format=Briefing,
     )
+    usage.record("briefing", model, response.usage)
     if response.stop_reason == "refusal":
         raise BriefingError("Claude declined to write the briefing")
     if response.parsed_output is None:

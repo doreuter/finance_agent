@@ -11,7 +11,7 @@ from typing import Literal, Optional
 import anthropic
 from pydantic import BaseModel, Field
 
-from . import config
+from . import config, usage
 
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 TEXT_TYPES = {"text/csv", "text/plain", "application/csv", "application/vnd.ms-excel"}
@@ -105,7 +105,7 @@ def content_blocks(path: Path, media_type: str) -> list[dict]:
 
 
 def extract(path: Path, media_type: str, accounts: list[dict], uploaded_by: str | None = None,
-            client: anthropic.Anthropic | None = None) -> Extraction:
+            client: anthropic.Anthropic | None = None, task: str = "extract") -> Extraction:
     account_list = json.dumps(
         [{"id": a["id"], "name": a["name"], "institution": a["institution"], "kind": a["kind"],
           "currency": a["currency"], "owner": a.get("owner", "")} for a in accounts],
@@ -117,8 +117,10 @@ def extract(path: Path, media_type: str, accounts: list[dict], uploaded_by: str 
             raise ExtractError("Claude API key missing or invalid: set ANTHROPIC_API_KEY in .env")
         client = anthropic.Anthropic()
     try:
+        model, effort = config.model_for(task)
         response = client.messages.parse(
-            model=config.claude_model(),
+            model=model,
+            output_config={"effort": effort},
             max_tokens=16000,
             system=SYSTEM,
             messages=[{
@@ -129,6 +131,7 @@ def extract(path: Path, media_type: str, accounts: list[dict], uploaded_by: str 
             }],
             output_format=Extraction,
         )
+        usage.record(task, model, response.usage)
     except anthropic.AuthenticationError as e:
         raise ExtractError("Claude API key missing or invalid: set ANTHROPIC_API_KEY in .env") from e
     except anthropic.APIConnectionError as e:
