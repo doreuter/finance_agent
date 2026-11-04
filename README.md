@@ -50,6 +50,17 @@ documents in November 2026:
 About $2 a month with weekly briefings. **Family → Claude usage** shows this month's cost per task.
 Override per task with e.g. `CLAUDE_MODEL_EXTRACT=claude-sonnet-5-5` or `CLAUDE_EFFORT_BRIEFING=medium`.
 
+## Security
+
+- Logins: scrypt password hashes, server-side sessions (HttpOnly, SameSite, Secure over HTTPS), 5 failed
+  attempts per username in 15 minutes (also for the setup token), same response time for unknown usernames.
+- Requests that change data from another site are refused (Origin / Sec-Fetch-Site check, on top of SameSite).
+- Uploads: only screenshots (PNG/JPEG/WebP/GIF), PDF and CSV; files are served from the uploads folder only,
+  in a sandbox (no scripts), CSV as plain text.
+- Strict Content-Security-Policy, no framing, HSTS.
+- Claude spending is capped: 30 uploads an hour per person, 10 second readings an hour, 3 briefings a day.
+- The upload token for the iPhone Shortcut can only upload; replace it under Family if a phone is lost.
+
 ## Run locally
 
 ```bash

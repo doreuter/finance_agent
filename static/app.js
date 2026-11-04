@@ -1044,7 +1044,7 @@ async function loadBriefing() {
       <td><strong>${esc(p.name)}</strong>${p.symbol ? ` <span class="muted small">${esc(p.symbol)}</span>` : ""}
         <div class="small">${esc(p.reasoning)}</div></td></tr>`).join("")}</tbody></table></div>
     <h4>To consider</h4>${notes(x.considerations)}
-    ${b.sources?.length ? `<details class="small sources"><summary>${b.sources.length} sources</summary><ul>${b.sources.map((s) =>
+    ${b.sources?.length ? `<details class="small sources"><summary>${b.sources.length} sources</summary><ul>${b.sources.filter((s) => /^https?:\/\//.test(s.url)).map((s) =>
       `<li><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></li>`).join("")}</ul></details>` : ""}`;
 }
 

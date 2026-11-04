@@ -588,3 +588,112 @@ def test_retry_reads_with_the_stronger_model(client, monkeypatch):
     upload_id = client.get("/api/uploads").json()[0]["id"]
     client.post(f"/api/uploads/{upload_id}/retry")
     assert seen == ["extract", "extract_retry"]
+
+
+# --- security -------------------------------------------------------------------------------------
+
+def test_uploads_of_web_pages_and_scripts_are_refused(client):
+    for name, data, mime in [("evil.html", b"<script>alert(1)</script>", "text/html"),
+                             ("evil.svg", b"<svg><script>alert(1)</script></svg>", "image/svg+xml"),
+                             ("evil.js", b"alert(1)", "application/javascript"),
+                             ("evil", b"<script>", "text/html")]:
+        assert client.post("/api/upload", files={"file": (name, data, mime)}).status_code == 415, name
+
+
+def test_uploaded_files_are_served_sandboxed(client):
+    client.post("/api/upload", files={"file": ("shot.png", b"\x89PNG", "image/png")})
+    client.post("/api/upload", files={"file": ("dkb.csv", b"<script>alert(1)</script>", "text/csv")})
+    png, csv = sorted(client.get("/api/uploads").json(), key=lambda u: u["id"])
+    r = client.get(f"/api/uploads/{csv['id']}/file")
+    assert r.headers["content-type"].startswith("text/plain") and r.headers["content-security-policy"].startswith("sandbox")
+    assert client.get(f"/api/uploads/{png['id']}/file").headers["content-security-policy"].startswith("sandbox")
+    # an older upload with a dangerous type is only offered as a download
+    from app import db
+    with db.connect() as conn:
+        conn.execute("UPDATE uploads SET media_type = 'text/html' WHERE id = ?", (png["id"],))
+    r = client.get(f"/api/uploads/{png['id']}/file")
+    assert r.headers["content-type"] == "application/octet-stream" and r.headers["content-disposition"].startswith("attachment")
+
+
+def test_upload_paths_outside_the_uploads_folder_are_not_served(client, tmp_path):
+    from app import db
+    secret = tmp_path / "secret.txt"
+    secret.write_text("ANTHROPIC_API_KEY=sk-ant-secret")
+    with db.connect() as conn:  # as a crafted database import could have it
+        upload_id = conn.execute("INSERT INTO uploads (filename, media_type, path, status) VALUES ('x.txt', 'text/plain', ?, 'pending')",
+                                 (str(secret),)).lastrowid
+        traversal = conn.execute("INSERT INTO uploads (filename, media_type, path, status) VALUES ('y.txt', 'text/plain', ?, 'pending')",
+                                 (str(db.uploads_dir() / ".." / "secret.txt"),)).lastrowid
+    assert client.get(f"/api/uploads/{upload_id}/file").status_code == 404
+    assert client.get(f"/api/uploads/{traversal}/file").status_code == 404
+
+
+def test_cross_site_requests_are_refused(client):
+    body = {"name": "Evil", "username": "evil", "password": "evil-password-123"}
+    assert client.post("/api/users", json=body, headers={"Origin": "https://evil.example"}).status_code == 403
+    assert client.post("/api/users", json=body, headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+    assert client.post("/api/users", json=body, headers={"Origin": "https://testserver"}).status_code == 200  # same host
+    assert client.post("/api/users", json={**body, "username": "evil2"}, headers={"Origin": "null"}).status_code == 403
+    assert client.get("/api/summary", headers={"Origin": "https://evil.example"}).status_code == 200  # reads are fine
+
+
+def test_unknown_username_takes_as_long_as_a_wrong_password(client, monkeypatch):
+    from app import auth
+    calls = []
+    real = auth.verify_password
+    monkeypatch.setattr(auth, "verify_password", lambda p, h: (calls.append(h), real(p, h))[1])
+    client.post("/api/logout")
+    client.post("/api/login", json={"username": "nobody", "password": "whatever-1234"})
+    client.post("/api/login", json={"username": "dominik", "password": "whatever-1234"})
+    assert len(calls) == 2  # the password is hashed in both cases
+
+
+def test_setup_token_guessing_is_rate_limited(anon, monkeypatch):
+    monkeypatch.setenv("SETUP_TOKEN", "server-secret")
+    form = {"name": "X", "username": "xy", "password": "long enough password"}
+    codes = [anon.post("/api/setup", data={**form, "setup_token": f"guess{i}"}).status_code for i in range(7)]
+    assert codes[:5] == [403] * 5 and codes[5:] == [429, 429]
+    assert anon.post("/api/setup", data={**form, "setup_token": "server-secret"}).status_code == 429  # even the right one, for now
+
+
+def test_setup_creates_only_one_first_user(anon):
+    from app import auth
+    auth.create_user("A", "a", "long enough password", first=True)
+    with pytest.raises(Exception):
+        auth.create_user("B", "b", "long enough password", first=True)
+
+
+def test_tickers_must_look_like_tickers(client):
+    depot = make_account(client, name="Depot", kind="depot", valuation="holdings")
+    r = client.put(f"/api/accounts/{depot['id']}/holdings", json=[{"name": "X", "symbol": "../../v7/x?a=", "quantity": 1}])
+    assert r.status_code == 422
+    assert client.put(f"/api/accounts/{depot['id']}/holdings", json=[{"name": "X", "symbol": " xdwd.de ", "quantity": 1}]).status_code == 200
+
+
+def test_claude_spending_is_capped(client, monkeypatch):
+    from app import main
+    monkeypatch.setattr(main, "MAX_UPLOADS_PER_HOUR", 2)
+    monkeypatch.setattr(main, "MAX_BRIEFINGS_PER_DAY", 1)
+    for _ in range(2):
+        assert client.post("/api/upload", files={"file": ("s.png", b"\x89PNG", "image/png")}).status_code == 200
+    assert client.post("/api/upload", files={"file": ("s.png", b"\x89PNG", "image/png")}).status_code == 429
+    from app import db
+    with db.connect() as conn:
+        conn.execute("INSERT INTO briefings (week, status, error) VALUES ('2026-W45', 'failed', 'x')")
+    assert client.post("/api/briefing").status_code == 429
+
+
+def test_briefing_sources_are_web_links_only(monkeypatch):
+    from types import SimpleNamespace
+    from app import briefing
+    block = SimpleNamespace(type="text", text="memo", citations=[SimpleNamespace(url="javascript:alert(1)", title="x"),
+                                                                 SimpleNamespace(url="https://ok.example/a", title="ok")])
+    response = SimpleNamespace(stop_reason="end_turn", content=[block], usage=None)
+
+    class Stream:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get_final_message(self): return response
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: Stream()))
+    memo, sources = briefing._research(client, {"today": "2026-11-04", "positions": []})
+    assert sources == [{"url": "https://ok.example/a", "title": "ok"}]

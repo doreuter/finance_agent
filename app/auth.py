@@ -26,6 +26,11 @@ def hash_password(password: str) -> str:
     return f"scrypt${salt.hex()}${digest.hex()}"
 
 
+# Checked against when the username doesn't exist, so a login takes as long either way and doesn't
+# reveal which usernames exist.
+_DUMMY_HASH: str | None = None  # made on first use, so importing the module stays fast
+
+
 def verify_password(password: str, stored: str) -> bool:
     try:
         _, salt_hex, digest_hex = stored.split("$")
@@ -48,8 +53,24 @@ def has_users() -> bool:
         return db.row(conn, "SELECT 1 FROM users LIMIT 1") is not None
 
 
-def create_user(name: str, username: str, password: str) -> dict:
+def verify_login(username: str, password: str) -> dict | None:
+    """The user for these credentials, or None; unknown usernames take as long as wrong passwords."""
+    global _DUMMY_HASH
     with db.connect() as conn:
+        user = db.row(conn, "SELECT * FROM users WHERE username = ?", username.strip())
+    if user is None:
+        _DUMMY_HASH = _DUMMY_HASH or hash_password(secrets.token_hex(16))
+        verify_password(password, _DUMMY_HASH)
+        return None
+    return user if verify_password(password, user["password_hash"]) else None
+
+
+def create_user(name: str, username: str, password: str, first: bool = False) -> dict:
+    """first=True only succeeds while there are no users (setup), checked in the same transaction."""
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if first and db.row(conn, "SELECT 1 FROM users LIMIT 1"):
+            raise HTTPException(409, "The app is already set up; sign in instead")
         if db.row(conn, "SELECT 1 FROM users WHERE username = ?", username):
             raise HTTPException(409, "That username is taken")
         cur = conn.execute("INSERT INTO users (name, username, password_hash) VALUES (?, ?, ?)",

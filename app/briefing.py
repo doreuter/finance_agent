@@ -158,7 +158,8 @@ def _research(client: anthropic.Anthropic, data: dict) -> tuple[str, list[dict]]
     memo = "\n".join(text).strip()
     if not memo:
         raise BriefingError(f"The research step returned no text (stop reason {response.stop_reason})")
-    return memo, [{"url": u, "title": t} for u, t in sources.items()]
+    # links come from web pages: only plain web links reach the page
+    return memo, [{"url": u, "title": t} for u, t in sources.items() if u.startswith(("https://", "http://"))]
 
 
 def _write(client: anthropic.Anthropic, data: dict, memo: str) -> Briefing:

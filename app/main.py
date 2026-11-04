@@ -9,6 +9,7 @@ import tempfile
 import json
 import logging
 import mimetypes
+from urllib.parse import urlsplit
 import re
 import os
 import secrets
@@ -21,7 +22,7 @@ from typing import Literal, Optional
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import advice, auth, briefing, config, db, extract, match, prices, usage, valuation
 
@@ -30,6 +31,15 @@ logger = logging.getLogger("financeagent")
 logging.basicConfig(level=logging.INFO)
 STATIC = config.ROOT / "static"
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+# Only these can be uploaded, and only these are shown in the browser; anything else would be a way to
+# put a web page or script on the app's own origin.
+UPLOAD_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/csv", "text/plain"}
+FILE_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
+# Limits on what can run up the Claude bill (an upload token on a lost phone, a script, a stuck button)
+MAX_UPLOADS_PER_HOUR = 30
+MAX_RETRIES_PER_HOUR = 10
+MAX_BRIEFINGS_PER_DAY = 3
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 SUFFIX_TYPES = {".csv": "text/csv", ".txt": "text/plain", ".pdf": "application/pdf",
                 ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 
@@ -83,6 +93,8 @@ async def require_login(request: Request, call_next):
     upload token as bearer header, which only works for uploads (iPhone Shortcut)."""
     path = request.url.path
     request.state.user = None
+    if path.startswith("/api/") and request.method in UNSAFE_METHODS and _cross_site(request):
+        return JSONResponse({"detail": "cross-site request refused"}, status_code=403)
     if path.startswith("/api/") and path not in OPEN_PATHS:
         user = auth.user_for_session(request.cookies.get(auth.SESSION_COOKIE, ""))
         header = request.headers.get("authorization", "")
@@ -92,12 +104,25 @@ async def require_login(request: Request, call_next):
             return JSONResponse({"detail": "login required"}, status_code=401)
         request.state.user = user
     response = await call_next(request)
-    response.headers.update(SECURITY_HEADERS)
+    for name, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)  # a route may set a stricter policy (uploaded files)
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
     if not path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-cache"  # revalidate, so an updated app.js is picked up
     return response
+
+
+def _cross_site(request: Request) -> bool:
+    """A browser request from another site: refused for anything that changes data (CSRF), on top of the
+    SameSite cookie. The iPhone Shortcut and other non-browser clients send neither header."""
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        return True
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    # compare hosts only: behind Render's proxy the scheme the app sees may differ from the browser's
+    return urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower()
 
 
 def _user(request: Request) -> dict:
@@ -155,20 +180,20 @@ def _import_database(upload: UploadFile) -> None:
 
 @app.post("/api/setup")
 def setup(request: Request, name: str = Form(..., min_length=1, max_length=60),
-          username: str = Form(..., min_length=2, max_length=40), password: str = Form(...),
-          setup_token: str = Form(""), import_db: Optional[UploadFile] = File(None)):
+          username: str = Form(..., min_length=2, max_length=40), password: str = Form(..., max_length=200),
+          setup_token: str = Form("", max_length=200), import_db: Optional[UploadFile] = File(None)):
     """Create the first login. Only possible while the app has no users."""
     if auth.has_users():
         raise HTTPException(409, "The app is already set up; sign in instead")
+    auth.check_login_allowed(request, "setup")  # before the token check, so it can't be guessed at speed
     expected = config.setup_token()
     if expected and not hmac.compare_digest(setup_token, expected):
         auth.record_login_failure(request, "setup")
         raise HTTPException(403, "Wrong setup token")
-    auth.check_login_allowed(request, "setup")
     _check_password(password)
     if import_db is not None and import_db.filename:
         _import_database(import_db)
-    user = auth.create_user(name.strip(), username.strip(), password)
+    user = auth.create_user(name.strip(), username.strip(), password, first=True)
     with db.connect() as conn:  # accounts made before there were logins belong to the first user
         conn.execute("UPDATE accounts SET owner_id = ? WHERE owner_id IS NULL", (user["id"],))
     response = JSONResponse({"user": user})
@@ -184,9 +209,8 @@ class Login(BaseModel):
 @app.post("/api/login")
 def login(body: Login, request: Request):
     auth.check_login_allowed(request, body.username)
-    with db.connect() as conn:
-        user = db.row(conn, "SELECT * FROM users WHERE username = ?", body.username.strip())
-    if not user or not auth.verify_password(body.password, user["password_hash"]):
+    user = auth.verify_login(body.username, body.password)
+    if not user:
         auth.record_login_failure(request, body.username)
         raise HTTPException(401, "Wrong username or password")
     response = JSONResponse({"user": auth.public_user(user)})
@@ -402,6 +426,16 @@ def delete_balance(balance_id: int):
 
 # --- holdings ----------------------------------------------------------------
 
+SYMBOL = r"^[A-Za-z0-9.\-^=]{1,30}$"  # Yahoo tickers; also keeps the symbol harmless in the quote URL
+
+
+def _symbol_or_none(value: Optional[str]) -> Optional[str]:
+    value = (value or "").strip()
+    if value and not re.fullmatch(SYMBOL, value):
+        raise ValueError("not a valid ticker")
+    return value or None
+
+
 class HoldingIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     symbol: Optional[str] = Field(None, max_length=30)
@@ -410,6 +444,8 @@ class HoldingIn(BaseModel):
     manual_price: Optional[float] = None
     currency: str = Field("CHF", pattern=r"^[A-Z]{3}$")
     replaces_id: Optional[int] = None  # an upload's position updating this existing holding
+
+    _symbol = field_validator("symbol")(_symbol_or_none)
 
 
 @app.get("/api/accounts/{account_id}/holdings")
@@ -590,6 +626,9 @@ def start_briefing(background: BackgroundTasks):
     """Write a briefing now (takes a few minutes; the page polls GET /api/briefing)."""
     if briefing.latest()["running"]:
         raise HTTPException(409, "A briefing is already being written")
+    with db.connect() as conn:
+        if _recent(conn, "SELECT COUNT(*) AS n FROM briefings WHERE created_at > datetime('now', '-1 day')") >= MAX_BRIEFINGS_PER_DAY:
+            raise HTTPException(429, f"At most {MAX_BRIEFINGS_PER_DAY} briefings a day; the next one comes on Monday")
     background.add_task(_run_briefing)
     return {"ok": True}
 
@@ -603,12 +642,14 @@ def _run_extraction(upload_id: int, task: str = "extract") -> None:
                                  "LEFT JOIN users u ON u.id = a.owner_id WHERE a.archived = 0")
         uploader = db.row(conn, "SELECT name FROM users WHERE id = ?", up["user_id"]) if up["user_id"] else None
     try:
-        result = extract.extract(Path(up["path"]), up["media_type"], accounts, uploader["name"] if uploader else None,
+        result = extract.extract(_stored_file(up), up["media_type"], accounts, uploader["name"] if uploader else None,
                                  task=task)
         # quantities from value / price, tickers checked against market prices
         status, payload, error = "pending", json.dumps(match.resolve_all(result.model_dump())), None
     except extract.ExtractError as e:
         status, payload, error = "failed", None, str(e)
+    except HTTPException:
+        status, payload, error = "failed", None, "The file is missing"
     except Exception as e:  # unexpected: keep the upload so it can be retried
         logger.exception("extraction failed")
         status, payload, error = "failed", None, f"Unexpected error: {e}"
@@ -624,6 +665,19 @@ def _media_type(file: UploadFile) -> str:
     return (file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream").split(";")[0]
 
 
+def _stored_file(u: dict) -> Path:
+    """The upload's file, which must lie in the uploads folder (a crafted database import could point
+    anywhere, e.g. at /proc/self/environ)."""
+    path = Path(u["path"]).resolve()
+    if not path.is_relative_to(db.uploads_dir().resolve()) or not path.is_file():
+        raise HTTPException(404, "file not found")
+    return path
+
+
+def _recent(conn, sql: str, *args) -> int:
+    return db.row(conn, sql, *args)["n"]
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile, background: BackgroundTasks, request: Request):
     """Accepts a screenshot, PDF statement or CSV (from the web page or the iPhone Shortcut); Claude reads it
@@ -634,6 +688,12 @@ async def upload(file: UploadFile, background: BackgroundTasks, request: Request
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "file too large (max 20 MB)")
     media_type = _media_type(file)
+    if media_type not in UPLOAD_TYPES:
+        raise HTTPException(415, "Upload a PNG/JPEG/WebP screenshot, a PDF or a CSV file")
+    with db.connect() as conn:
+        if _recent(conn, "SELECT COUNT(*) AS n FROM uploads WHERE user_id = ? AND created_at > datetime('now', '-1 hour')",
+                   _user(request)["id"]) >= MAX_UPLOADS_PER_HOUR:
+            raise HTTPException(429, f"At most {MAX_UPLOADS_PER_HOUR} uploads an hour; try again later")
     name = Path(file.filename or "upload").name
     stored = db.uploads_dir() / f"{date.today().isoformat()}-{secrets.token_hex(4)}-{name}"
     stored.parent.mkdir(parents=True, exist_ok=True)
@@ -676,8 +736,15 @@ def _upload(conn, upload_id: int) -> dict:
 def upload_file(upload_id: int):
     with db.connect() as conn:
         u = _upload(conn, upload_id)
-    return FileResponse(u["path"], media_type=u["media_type"], filename=u["filename"],
-                        content_disposition_type="inline")
+    path = _stored_file(u)
+    if u["media_type"] in UPLOAD_TYPES:  # screenshots and PDFs open in the browser; CSV/text as plain text
+        media_type = "text/plain" if u["media_type"].startswith("text/") else u["media_type"]
+        response = FileResponse(path, media_type=media_type, filename=u["filename"], content_disposition_type="inline")
+    else:  # anything older that isn't an allowed type is only offered as a download
+        response = FileResponse(path, media_type="application/octet-stream", filename=u["filename"])
+    if u["media_type"] != "application/pdf":  # the browser's PDF viewer doesn't run in a sandbox
+        response.headers["Content-Security-Policy"] = FILE_CSP
+    return response
 
 
 class PositionIn(BaseModel):
@@ -688,6 +755,8 @@ class PositionIn(BaseModel):
     value: Optional[float] = None
     currency: Optional[str] = None
     replaces_id: Optional[int] = None  # the existing holding this position updates; None = a new position
+
+    _symbol = field_validator("symbol")(_symbol_or_none)
 
 
 class ApplyItem(BaseModel):
@@ -798,6 +867,9 @@ def dismiss_upload(upload_id: int):
 def retry_upload(upload_id: int, background: BackgroundTasks):
     with db.connect() as conn:
         _upload(conn, upload_id)
+        if _recent(conn, "SELECT COUNT(*) AS n FROM llm_usage WHERE task = 'extract_retry' "
+                         "AND created_at > datetime('now', '-1 hour')") >= MAX_RETRIES_PER_HOUR:
+            raise HTTPException(429, "Too many second readings this hour; try again later")
         conn.execute("UPDATE uploads SET status = 'reading', error = NULL WHERE id = ?", (upload_id,))
     background.add_task(_run_extraction, upload_id, "extract_retry")  # a second reading with the stronger model
     return {"ok": True}
