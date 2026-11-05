@@ -11,7 +11,7 @@ from typing import Literal, Optional
 import anthropic
 from pydantic import BaseModel, Field
 
-from . import config, usage
+from . import config, research, usage
 
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 TEXT_TYPES = {"text/csv", "text/plain", "application/csv", "application/vnd.ms-excel"}
@@ -149,7 +149,7 @@ def extract(path: Path, media_type: str, accounts: list[dict], uploaded_by: str 
     except anthropic.APIConnectionError as e:
         raise ExtractError("Could not reach the Claude API") from e
     except anthropic.APIStatusError as e:
-        raise ExtractError(f"Claude API error {e.status_code}: {e.message}") from e
+        raise ExtractError(research.claude_error(e)) from e
     if response.stop_reason == "refusal":
         raise ExtractError("Claude declined to read this file")
     if response.parsed_output is None:

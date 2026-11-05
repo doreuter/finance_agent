@@ -1022,7 +1022,7 @@ async function updateTasksBadge() {
 }
 
 async function loadInsights() {
-  const [tasks] = await Promise.all([updateTasksBadge(), loadSavings(), loadPension(), loadTax(), loadTaxEstimate(), loadBriefing()]);
+  const [tasks] = await Promise.all([updateTasksBadge(), loadSavings(), loadProposal(), loadPension(), loadTax(), loadBriefing()]);
   renderTasks(tasks);
 }
 
@@ -1146,6 +1146,84 @@ function renderProjection(s) {
   svg.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); tip.hidden = true; });
 }
 
+// --- savings plan proposal ---------------------------------------------------------------------------
+
+const RISK_LABELS = { cautious: "Cautious", balanced: "Balanced", growth: "Growth" };
+const BROKERS = ["Neon", "Yuh", "Swissquote", "PostFinance", "VIAC", "frankly", "Interactive Brokers", "Saxo", "DKB"];
+let proposalPoll;
+
+async function loadProposal() {
+  const [p, people, accounts] = await Promise.all([api("/api/savings/proposal"), api("/api/pension"), api("/api/accounts")]);
+  state.accounts = accounts;
+  const me = people.find((x) => x.user_id === state.me.id) || {};
+  const box = $("#proposal");
+  clearTimeout(proposalPoll);
+  if (p.running && !$("#tab-insights").hidden) proposalPoll = setTimeout(loadProposal, 8000);
+  const settings = `<form id="proposal-settings" class="form-grid">
+      <label>Broker <input name="preferred_broker" list="broker-options" value="${esc(me.preferred_broker || "")}" placeholder="e.g. Neon" maxlength="60" required></label>
+      <label>CHF per month <input name="savings_budget" type="number" min="1" step="10" value="${me.savings_budget ?? ""}" required></label>
+      <label>Risk <select name="risk_profile">${Object.entries(RISK_LABELS).map(([v, l]) =>
+        `<option value="${v}" ${(me.risk_profile || "balanced") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <label>Wishes (optional) <input name="invest_notes" value="${esc(me.invest_notes || "")}" maxlength="500" placeholder="e.g. no single stocks"></label>
+      <button class="ghost" ${p.running ? "disabled" : ""}>${p.running ? "Writing…" : p.proposal ? "Propose again" : "Propose my savings plan"}</button>
+    </form>
+    <datalist id="broker-options">${BROKERS.map((b) => `<option value="${b}">`).join("")}</datalist>`;
+  const status = p.running ? `<p class="muted small">Claude is checking ${esc(me.preferred_broker || "the broker")}'s current ETF offer and fees; about two minutes.</p>`
+    : p.last_error ? `<p class="error small">${esc(p.last_error)}</p>` : "";
+  let body = "";
+  if (p.proposal) {
+    const x = p.proposal;
+    const depots = state.accounts.filter((a) => a.kind === "depot" && (a.owner_id === state.me.id || a.owner_id == null));
+    body = `<div class="proposal">
+      <div class="muted small">For ${esc(state.me.name)} at ${esc(x.broker)} · proposed ${esc(shortDate(p.created_at.slice(0, 10)))}</div>
+      <p>${esc(x.summary)}</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>ETF</th><th class="num">CHF / month</th><th class="hide-sm">Cost</th></tr></thead>
+        <tbody>${x.plans.map((q) => `<tr><td><strong>${esc(q.name)}</strong> <span class="muted small">${esc([q.ticker, q.isin].filter(Boolean).join(" · "))}</span>
+          <div class="small">${esc(q.role)}${q.ter != null ? ` · TER ${(q.ter * 100).toFixed(2)}%` : ""}</div><div class="small muted">${esc(q.why)}</div></td>
+          <td class="num"><strong>${esc(money(q.monthly_chf, null))}</strong></td><td class="hide-sm small">${esc(q.broker_cost)}</td></tr>`).join("")}
+          <tr class="bank-row"><th>Total</th><th class="num">${esc(money(x.monthly_total_chf, null))}</th><th class="hide-sm"></th></tr></tbody></table></div>
+      ${x.changes.length ? `<p class="small"><strong>Compared with today:</strong></p><ul class="notes-list small">${x.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
+      <p class="small"><strong>When to look at it again:</strong> ${esc(x.review)}</p>
+      <details class="small sources"><summary>Caveats and ${p.sources.length} sources</summary>
+        <ul>${x.caveats.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+        <ul>${p.sources.filter((s) => /^https?:\/\//.test(s.url)).map((s) => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></li>`).join("")}</ul></details>
+      ${depots.length ? `<form id="adopt-proposal" class="row">
+        <label>Use as my savings plans in <select name="account_id">${depots.map((a) => `<option value="${a.id}">${esc(a.institution)} · ${esc(a.name)}</option>`).join("")}</select></label>
+        <button class="primary">Use this plan</button></form>
+        <p class="muted small">This updates the plans in the app; set them up in your ${esc(x.broker)} app too.</p>` : ""}
+      <p class="muted small">Information for your own decision, not financial advice. Made to run unchanged for years: new money keeps the mix, a look once a year is enough.</p>
+    </div>`;
+  }
+  box.innerHTML = (p.proposal ? "" : `<p class="small">Tell the app your broker and how much you want to invest each month. Claude checks the broker's
+      current ETF savings plans and fees and proposes two to four funds that fit what you already hold, meant to run for years. About $0.40.</p>`)
+    + settings + status + body;
+  $("#proposal-settings").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      await api(`/api/users/${state.me.id}`, { method: "PATCH", body: {
+        preferred_broker: f.preferred_broker.value.trim(), savings_budget: Number(f.savings_budget.value),
+        risk_profile: f.risk_profile.value, invest_notes: f.invest_notes.value.trim() || null } });
+      await api("/api/savings/proposal", { method: "POST" });
+      loadProposal();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+  $("#adopt-proposal")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!confirm("Replace this depot's savings plans in the app with the proposal?")) return;
+    try {
+      await api(`/api/savings/proposal/${p.id}/adopt`, { method: "POST", body: { account_id: Number(e.target.account_id.value) } });
+      toast("Savings plans updated");
+      loadSavings();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+}
+
 // --- taxes -------------------------------------------------------------------------------------------
 
 async function loadTax(year) {
@@ -1178,45 +1256,6 @@ async function loadTax(year) {
     ${people.length ? `<p class="small"><strong>Deductions ${t.year}:</strong> ${people.map((d) =>
       `${esc(d.name)}: pillar 3a ${esc(money(d.pillar3a, cur))}${d.pillar3a_max ? ` of ${esc(money(d.pillar3a_max, cur))}` : ""}${d.pillar2_buyins ? `, pillar 2 buy-ins ${esc(money(d.pillar2_buyins, cur))}` : ""}`).join(" · ")}</p>` : ""}
     <p class="muted small">Prices are the app's market prices; the tax office uses its own year-end list (ESTV Kursliste), which can differ slightly.</p>`;
-}
-
-let taxPoll;
-async function loadTaxEstimate() {
-  const e = await api("/api/tax/estimate");
-  const box = $("#tax-estimate");
-  clearTimeout(taxPoll);
-  if (e.running && !$("#tab-insights").hidden) taxPoll = setTimeout(loadTaxEstimate, 8000);
-  const button = `<button id="tax-estimate-run" class="ghost" ${e.running ? "disabled" : ""}>${e.running ? "Estimating…" : e.estimate ? "Estimate again" : "Estimate my taxes"}</button>`;
-  const status = e.running ? `<p class="muted small">Claude is looking up your canton's tariffs and doing the arithmetic; about two minutes.</p>`
-    : e.last_error ? `<p class="error small">${esc(e.last_error)}</p>` : "";
-  if (!e.estimate) {
-    box.innerHTML = `<p class="small">Claude looks up the current tariffs for your canton and municipality, estimates wealth and income tax,
-      and lists what you could do to pay less. Needs canton and approximate taxable income under Family. About $0.40 per estimate.</p>
-      ${status}<div class="actions">${button}</div>`;
-  } else {
-    const x = e.estimate;
-    box.innerHTML = `${status}
-      <div class="muted small">Estimated ${esc(shortDate(e.created_at.slice(0, 10)))} for ${e.year}</div>
-      <p>${esc(x.summary)}</p>
-      <div class="savings-head">${x.people.map((p) => `<div><div class="muted small">${esc(p.name)}</div>
-        <div class="small">Wealth tax ≈ <strong>${esc(money(p.wealth_tax_chf, "CHF"))}</strong>${p.income_tax_chf != null ? ` · income tax ≈ ${esc(money(p.income_tax_chf, "CHF"))}` : ""}
-        ${p.income_tax_marginal_rate != null ? `<br>Marginal rate ≈ ${Math.round(p.income_tax_marginal_rate * 100)}%` : ""}</div></div>`).join("")}</div>
-      <ol class="notes-list">${x.savings.map((s) => `<li><strong>${esc(s.title)}</strong>${s.estimated_saving_chf != null ? ` · saves ≈ ${esc(money(s.estimated_saving_chf, "CHF"))} a year` : ""}${s.deadline ? ` · by ${esc(s.deadline)}` : ""}
-        <div class="small">${esc(s.detail)}</div></li>`).join("")}</ol>
-      <details class="small sources"><summary>Assumptions and ${e.sources.length} sources</summary>
-        <ul>${x.assumptions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>
-        <ul>${e.sources.filter((s) => /^https?:\/\//.test(s.url)).map((s) => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></li>`).join("")}</ul></details>
-      <p class="muted small">A rough estimate to plan with, not a tax assessment; check exact figures with your canton's tax calculator.</p>
-      <div class="actions">${button}</div>`;
-  }
-  $("#tax-estimate-run").addEventListener("click", async () => {
-    try {
-      await api("/api/tax/estimate", { method: "POST" });
-      loadTaxEstimate();
-    } catch (err) {
-      toast(err.message);
-    }
-  });
 }
 
 async function loadPension() {
@@ -1288,10 +1327,11 @@ $("#write-briefing").addEventListener("click", async () => {
 
 // --- ask: chat with Claude -----------------------------------------------------------------------------
 
-const CHAT_SUGGESTIONS = ["How much can I still pay into pillar 3a this year, and what does it save in tax?",
-  "Do my ETF savings plans overlap? How could I simplify them?",
+const CHAT_SUGGESTIONS = ["What can I do this year to pay less tax?",
+  "How much can I still pay into pillar 3a, and what does it save me?",
   "Should I do a pillar 2 buy-in this year? What speaks for and against it?",
-  "What can I deduct in my tax return?"];
+  "What can I deduct in my tax return?",
+  "Is my monthly ETF savings plan well diversified?"];
 let chat = [];
 
 function loadChatHistory() {

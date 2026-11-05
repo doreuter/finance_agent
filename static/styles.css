@@ -336,3 +336,5 @@ dialog#quote-dialog::backdrop { background: rgb(0 0 0 / .4); }
 .chat-form textarea { flex: 1; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px; resize: vertical; min-height: 44px; }
 #chat-suggestions button { text-align: left; }
+.proposal { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+#proposal-settings { margin-bottom: 8px; }

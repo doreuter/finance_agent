@@ -89,9 +89,9 @@ CREATE TABLE IF NOT EXISTS savings_plans (  -- recurring purchases, e.g. a month
     day INTEGER,
     active INTEGER NOT NULL DEFAULT 1
 );
-CREATE TABLE IF NOT EXISTS tax_estimates (  -- Claude's estimate of wealth/income tax and savings potential
+CREATE TABLE IF NOT EXISTS savings_proposals (  -- Claude's proposal for a person's monthly ETF savings plans
     id INTEGER PRIMARY KEY,
-    year INTEGER NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'running',  -- running | done | failed
     content_json TEXT,
     error TEXT,
@@ -166,7 +166,9 @@ MIGRATIONS = {
               "pillar2_buyin": "REAL", "pillar2_buyin_as_of": "TEXT",  # buy-in potential from the Vorsorgeausweis
               # for the tax features: where the person is taxed and roughly on what income
               "canton": "TEXT", "municipality": "TEXT", "married": "INTEGER", "children": "INTEGER",
-              "taxable_income": "REAL"},
+              "taxable_income": "REAL",
+              # for the savings plan proposal
+              "preferred_broker": "TEXT", "savings_budget": "REAL", "risk_profile": "TEXT", "invest_notes": "TEXT"},
 }
 # Run once when a column is added, to fill it for existing rows.
 BACKFILL = {

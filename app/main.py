@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel, Field, field_validator
 
-from . import advice, auth, briefing, chat, config, db, extract, match, prices, savings, tax, usage, valuation
+from . import advice, auth, briefing, chat, config, db, extract, match, prices, proposal, savings, tax, usage, valuation
 
 config.load_dotenv()
 logger = logging.getLogger("financeagent")
@@ -78,6 +78,7 @@ app = FastAPI(title="FinanceAgent", lifespan=lifespan)
 app.include_router(savings.router)
 app.include_router(tax.router)
 app.include_router(chat.router)
+app.include_router(proposal.router)
 
 
 OPEN_PATHS = {"/api/status", "/api/login", "/api/setup", "/healthz"}
@@ -543,6 +544,10 @@ class ProfilePatch(BaseModel):
     married: Optional[bool] = None
     children: Optional[int] = Field(None, ge=0, le=20)
     taxable_income: Optional[float] = Field(None, ge=0, le=100_000_000)
+    preferred_broker: Optional[str] = Field(None, max_length=60)
+    savings_budget: Optional[float] = Field(None, ge=0, le=1_000_000)  # CHF per month for ETF savings plans
+    risk_profile: Optional[Literal["cautious", "balanced", "growth"]] = None
+    invest_notes: Optional[str] = Field(None, max_length=500)  # wishes, e.g. "no single stocks", "sustainable"
 
 
 @app.patch("/api/users/{user_id}")

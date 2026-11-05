@@ -853,24 +853,6 @@ def test_tax_profile_fields(client):
     assert client.patch(f"/api/users/{uid}", json={"canton": "Zurich"}).status_code == 422
 
 
-def test_tax_estimate_flow(client, monkeypatch):
-    from app import tax
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
-    with pytest.raises(tax.TaxError, match="canton"):
-        tax.generate(2026, client=object())
-    client.patch(f"/api/users/{client.user['id']}", json={"canton": "ZH", "taxable_income": 120000})
-    seen = {}
-    monkeypatch.setattr(tax, "_research", lambda c, data: (seen.setdefault("data", data), ("memo", [{"url": "https://zh.ch/x", "title": "ZH"}]))[1])
-    monkeypatch.setattr(tax, "_estimate", lambda c, data, memo: tax.TaxEstimate(
-        summary="s", people=[tax.PersonEstimate(name="Dominik", wealth_tax_chf=300, income_tax_marginal_rate=0.3)],
-        savings=[tax.Saving(title="Max pillar 3a", detail="d", estimated_saving_chf=2177, deadline="31 December")],
-        assumptions=["2026 tariff"]))
-    tax.generate(2026, client=object())
-    e = client.get("/api/tax/estimate").json()
-    assert e["estimate"]["savings"][0]["estimated_saving_chf"] == 2177 and not e["running"]
-    assert seen["data"]["people"][0]["canton"] == "ZH" and seen["data"]["people"][0]["approx_taxable_income_chf"] == 120000
-
-
 def test_chat_answers_with_family_data_and_is_limited(client, monkeypatch):
     from app import chat
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
@@ -896,3 +878,45 @@ def test_account_type_can_be_changed_to_a_pension_account(client):
     assert r.status_code == 200 and r.json()["kind"] == "pillar3a"
     assert client.get("/api/pension").json()[0]["has_3a"] is True
     assert client.patch(f"/api/accounts/{viac['id']}", json={"kind": "savings"}).status_code == 422
+
+
+def test_savings_plan_proposal_and_adopting_it(client, monkeypatch):
+    from app import proposal
+    uid = client.user["id"]
+    assert client.post("/api/savings/proposal").status_code == 422  # broker and amount first
+    client.patch(f"/api/users/{uid}", json={"preferred_broker": "Neon", "savings_budget": 800, "risk_profile": "growth",
+                                           "invest_notes": "no single stocks", "birth_year": 1988})
+    depot = make_account(client, name="Neon Invest", institution="Neon", kind="depot", valuation="holdings", owner_id=uid)
+    client.put(f"/api/accounts/{depot['id']}/savings-plans", json=[{"name": "Old plan", "amount": 100}])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    seen = {}
+    monkeypatch.setattr(proposal.research, "memo", lambda c, task, system, q, n: (seen.setdefault("q", q), ("memo", [{"url": "https://neon-free.ch", "title": "Neon"}]))[1])
+    monkeypatch.setattr(proposal, "_write", lambda c, data, memo: (seen.setdefault("data", data), proposal.Proposal(
+        summary="Simple world plus Switzerland.", broker="Neon", monthly_total_chf=800,
+        plans=[proposal.ProposedPlan(name="Xtrackers MSCI World", isin="IE00BJ0KDQ92", ticker="XDWD.DE", role="core",
+                                     monthly_chf=600, ter=0.0019, broker_cost="free as savings plan", why="w"),
+               proposal.ProposedPlan(name="iShares SPI", ticker="bad ticker!", role="home", monthly_chf=200,
+                                     broker_cost="free", why="w")],
+        changes=["Stop the old plan"], review="Once a year", caveats=["Fees can change"]))[1])
+    pid = proposal.generate(uid, client=object())
+    assert "Neon" in seen["q"] and seen["data"]["risk_profile"] == "growth" and seen["data"]["current_savings_plans"][0]["fund"] == "Old plan"
+    p = client.get("/api/savings/proposal").json()
+    assert p["proposal"]["monthly_total_chf"] == 800 and p["sources"][0]["url"] == "https://neon-free.ch"
+    assert client.post(f"/api/savings/proposal/{pid}/adopt", json={"account_id": depot["id"]}).status_code == 200
+    plans = client.get(f"/api/accounts/{depot['id']}/savings-plans").json()
+    assert [(x["name"], x["amount"], x["symbol"]) for x in plans] == [("Xtrackers MSCI World", 600, "XDWD.DE"), ("iShares SPI", 200, None)]
+    cash = make_account(client, name="Cash")
+    assert client.post(f"/api/savings/proposal/{pid}/adopt", json={"account_id": cash["id"]}).status_code == 422
+
+
+def test_tax_estimate_is_gone(client):
+    assert client.post("/api/tax/estimate").status_code in (404, 405)
+
+
+def test_claude_errors_are_explained():
+    import anthropic, httpx
+    from app import research
+    response = httpx.Response(400, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"))
+    e = anthropic.BadRequestError("Error code: 400 - Your credit balance is too low to access the Anthropic API.",
+                                  response=response, body=None)
+    assert "credit is used up" in research.claude_error(e)

@@ -17,10 +17,9 @@ from typing import Literal
 import anthropic
 from pydantic import BaseModel, Field
 
-from . import advice, config, db, research, usage, valuation
+from . import advice, config, db, research, savings, usage, valuation
 
 logger = logging.getLogger("financeagent")
-MAX_CONTINUATIONS = 5  # pause_turn resumes of the research call
 MAX_SEARCHES = 15
 STALE_RUNNING = timedelta(minutes=30)  # a 'running' briefing older than this died with a restart
 
@@ -74,7 +73,9 @@ memo and the portfolio data. The family invests with a mid-to-long-term horizon 
 trading on short-term moves; weigh diversification, concentration, overlap between funds, costs, currency \
 exposure, valuation and the family's ages and pension situation. For every position give a stance (buy, \
 hold, reduce or watch) with reasoning; 'buy' and 'reduce' need a clear long-term reason, otherwise hold or \
-watch. Be concrete and honest about uncertainty. This is information to support the family's own decisions, \
+watch. The family's monthly savings plans are set for years on purpose: don't suggest changing them because of \
+a week's news; mention them only if something is fundamentally wrong (a fund closed, fees rose, a big \
+concentration builds up). Be concrete and honest about uncertainty. This is information to support the family's own decisions, \
 not personal financial advice; never promise returns. Suggest tasks only for portfolio actions worth a \
 reminder, never for topics listed as done, dismissed or snoozed. Pillar 2 and 3a reminders (payments, \
 deadlines, buy-ins) come from the app's own rules, so mention those topics in considerations if relevant \
@@ -119,6 +120,8 @@ def context() -> dict:
                else {"pillar3a": "no 3a account recorded"}),
             **({"pillar2_buyin_potential": o["pillar2_buyin"]} if o["has_pillar2"] else {}),
         } for o in owners.values()],
+        "savings_plans": [{"fund": p["name"], "symbol": p["symbol"], "chf_per_month": round(p["monthly_base"] or 0)}
+                          for p in savings.overview("all")["plans"]],
         "tasks": tasks,
         "previous_headline": json.loads(last["content_json"])["briefing"]["headline"] if last else None,
     }
@@ -127,27 +130,11 @@ def context() -> dict:
 def _research(client: anthropic.Anthropic, data: dict) -> tuple[str, list[dict]]:
     holdings = "\n".join(f'- {p["name"]} ({p["symbol"] or "no ticker"}), {p["share_of_portfolio"]} of portfolio'
                          for p in data["positions"])
-    messages = [{"role": "user", "content": f"Today is {data['today']}. The holdings:\n{holdings}\n\n"
-                                            "Research the past week for these holdings and the market."}]
-    tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": MAX_SEARCHES}]
-    model, effort = config.model_for("research")
-    response, content = None, []
-    for _ in range(MAX_CONTINUATIONS + 1):
-        with client.messages.stream(model=model, max_tokens=16000, system=RESEARCH_SYSTEM, messages=messages,
-                                    tools=tools, output_config={"effort": effort}) as stream:
-            response = stream.get_final_message()
-        usage.record("research", model, response.usage)
-        if response.stop_reason == "refusal":
-            raise BriefingError("Claude declined the research step")
-        content += response.content
-        if response.stop_reason != "pause_turn":
-            break
-        # the server's search loop paused; send the turn so far back and it resumes where it stopped
-        messages = [messages[0], {"role": "assistant", "content": content}]
-    memo, sources = research.text_and_sources(content)
-    if not memo:
-        raise BriefingError(f"The research step returned no text (stop reason {response.stop_reason})")
-    return memo, sources
+    try:
+        return research.memo(client, "research", RESEARCH_SYSTEM, f"Today is {data['today']}. The holdings:\n{holdings}\n\n"
+                             "Research the past week for these holdings and the market.", MAX_SEARCHES)
+    except research.ResearchError as e:
+        raise BriefingError(str(e)) from e
 
 
 def _write(client: anthropic.Anthropic, data: dict, memo: str) -> Briefing:
@@ -191,9 +178,10 @@ def generate(client: anthropic.Anthropic | None = None) -> int:
         memo, sources = _research(client, data)
         result = _write(client, data, memo)
     except (BriefingError, anthropic.APIError) as e:
+        message = research.claude_error(e)
         with db.connect() as conn:
-            conn.execute("UPDATE briefings SET status = 'failed', error = ? WHERE id = ?", (str(e), briefing_id))
-        raise BriefingError(str(e)) from e
+            conn.execute("UPDATE briefings SET status = 'failed', error = ? WHERE id = ?", (message, briefing_id))
+        raise BriefingError(message) from e
     with db.connect() as conn:
         conn.execute("UPDATE briefings SET status = 'done', content_json = ? WHERE id = ?",
                      (json.dumps({"briefing": result.model_dump(), "sources": sources[:40]}), briefing_id))

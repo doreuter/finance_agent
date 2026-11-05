@@ -12,11 +12,10 @@ import anthropic
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import advice, config, db, research, savings, tax, usage, valuation
+from . import advice, config, db, proposal, research, savings, tax, valuation
 
 router = APIRouter()
 MAX_QUESTIONS_PER_DAY = 40
-MAX_CONTINUATIONS = 4
 
 SYSTEM = """You are FinanceAgent, the assistant in a Swiss family's private finance app. You answer their \
 questions about their own money: accounts, investments and ETF savings plans, pillar 2 and 3a, and Swiss \
@@ -26,7 +25,12 @@ news; search when an answer depends on current figures or the canton's rules, an
 - Be concrete and use their numbers. Keep answers short (a few paragraphs or a list) unless asked for detail.
 - Investments: think mid-to-long term; explain trade-offs (diversification, costs, currency, taxes) and say \
 what you would weigh, rather than giving orders.
+- Saving tax is a main reason they ask: look at their 3a room, pillar 2 buy-in potential, canton, income, \
+marital status and deductions, and name concrete steps with rough amounts and deadlines (e.g. paying the \
+full 3a before 31 December, spreading buy-ins, staggering withdrawals over several 3a accounts). Search for \
+the canton's current rules when the amount depends on them.
 - Taxes and pensions: rules differ by canton and change every year; say which year and canton a figure is for.
+- Savings plans are meant to run for years; don't suggest monthly changes.
 - You inform their own decisions. This is not financial or tax advice; for large or irreversible steps \
 (pillar 2 buy-ins, withdrawals, property) suggest checking with the pension fund, the tax office or an advisor.
 - Use plain Markdown: short paragraphs, **bold**, bullet lists. No tables.
@@ -43,7 +47,14 @@ class ChatIn(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=30)
 
 
-def family_context(owner_name: str) -> str:
+def _proposal_summary(user_id: int | None) -> dict | None:
+    if user_id is None:
+        return None
+    p = proposal.latest(user_id).get("proposal")
+    return {"summary": p["summary"], "plans": [{k: x[k] for k in ("name", "monthly_chf", "role")} for x in p["plans"]]} if p else None
+
+
+def family_context(owner_name: str, owner_id: int | None = None) -> str:
     """Everything Claude should know, compact: who, what they own, what they save, pensions, taxes."""
     summary = valuation.summary("all")
     portfolio = valuation.portfolio("all")
@@ -69,6 +80,7 @@ def family_context(owner_name: str) -> str:
         "savings_plans": [{"fund": p["name"], "symbol": p["symbol"], "chf_per_month": round(p["monthly_base"] or 0),
                            "owner": p["owner_name"] or "joint"} for p in plans["plans"]],
         "people": [{k: v for k, v in p.items() if k not in ("user_id",)} for p in advice.pension_overview()],
+        "savings_plan_proposal": _proposal_summary(owner_id),
         "taxable_wealth_last_31_dec": round(statement["taxable_wealth"]),
         "open_tasks": [t["title"] for t in tasks],
         "latest_briefing_headline": json.loads(brief["content_json"])["briefing"]["headline"] if brief else None,
@@ -77,21 +89,11 @@ def family_context(owner_name: str) -> str:
 
 
 def ask(client: anthropic.Anthropic, messages: list[dict], context: str) -> dict:
-    model, effort = config.model_for("chat")
-    tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 5}]
     system = f"{SYSTEM}\n\n<family_data>\n{context}\n</family_data>"
-    content, response = [], None
-    for _ in range(MAX_CONTINUATIONS + 1):
-        convo = messages + ([{"role": "assistant", "content": content}] if content else [])
-        with client.messages.stream(model=model, max_tokens=6000, system=system, messages=convo, tools=tools,
-                                    output_config={"effort": effort}) as stream:
-            response = stream.get_final_message()
-        usage.record("chat", model, response.usage)
-        if response.stop_reason == "refusal":
-            return {"text": "I can't help with that one.", "sources": []}
-        content += response.content
-        if response.stop_reason != "pause_turn":
-            break
+    try:
+        content = research.run(client, "chat", system, messages, max_searches=5, max_tokens=6000)
+    except research.ResearchError:
+        return {"text": "I can't help with that one.", "sources": []}
     text, sources = research.text_and_sources(content, limit=10)
     return {"text": text or "(no answer)", "sources": sources}
 
@@ -110,6 +112,6 @@ def chat(body: ChatIn, request: Request):
     if not config.anthropic_key():
         raise HTTPException(503, "Claude API key missing: set ANTHROPIC_API_KEY")
     try:
-        return ask(anthropic.Anthropic(), [m.model_dump() for m in body.messages], family_context(user["name"]))
+        return ask(anthropic.Anthropic(), [m.model_dump() for m in body.messages], family_context(user["name"], user["id"]))
     except anthropic.APIError as e:
-        raise HTTPException(502, f"Claude is not reachable right now ({getattr(e, 'status_code', 'error')})")
+        raise HTTPException(502, research.claude_error(e))

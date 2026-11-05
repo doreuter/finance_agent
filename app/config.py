@@ -40,15 +40,16 @@ def anthropic_key() -> str:
 # - extract_retry: "Try again" after a failed or poor reading uses a stronger model.
 # - research: the briefing's web research reads many search results (input-heavy); Sonnet is half Opus' price.
 # - briefing: the stances and considerations are the judgment the family acts on; small input, so Opus is cheap here.
-# - tax_research / tax_estimate: same split as the briefing (Sonnet reads the tariffs, Opus does the arithmetic).
+# - proposal_research / proposal: same split for the savings plan proposal (Sonnet reads the broker's offer,
+#   Opus weighs the portfolio).
 # - chat: a quick answer with the family's data and a few searches; Sonnet balances quality and cost per question.
 TASK_MODELS = {
     "extract": ("claude-haiku-5-5", "medium"),
     "extract_retry": ("claude-opus-5-5", "medium"),
     "research": ("claude-sonnet-5-5", "medium"),
     "briefing": ("claude-opus-5-5", "high"),
-    "tax_research": ("claude-sonnet-5-5", "medium"),
-    "tax_estimate": ("claude-opus-5-5", "high"),
+    "proposal_research": ("claude-sonnet-5-5", "medium"),
+    "proposal": ("claude-opus-5-5", "high"),
     "chat": ("claude-sonnet-5-5", "medium"),
 }
 

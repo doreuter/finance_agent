@@ -38,15 +38,14 @@ The **Insights** tab collects what is worth acting on:
   split compared with what the depot already holds, and a 30-year illustration at 2/5/7% a year.
 - **Taxes:** every account and position on 31 December (CSV for the securities list), foreign accounts and
   pension money marked, the year's 3a and pillar 2 deductions, and per position how distributions are taxed
-  (Swiss 35% withholding tax reclaimable, US via DA-1, Irish/Luxembourg funds). *Estimate my taxes* has
-  Claude look up the canton's and municipality's tariffs and estimate wealth and income tax with concrete
-  ways to save (needs canton and approximate taxable income under Family; about $0.45). From January to
-  April, to-dos remind you of the return, withholding tax, foreign accounts; from 40, of staggering 3a.
+  (Swiss 35% withholding tax reclaimable, US via DA-1, Irish/Luxembourg funds). From January to April,
+  to-dos remind you of the return, withholding tax, foreign accounts; from 40, of staggering 3a. Ways to
+  save tax: ask in **Ask**.
 
 **Ask** is a chat with Claude that knows the family's data and searches the web for current rules
 (about $0.08 per question, 40 questions a day per person). The conversation stays in the browser tab.
 
-Briefing, estimate and chat inform your own decisions; they are not financial or tax advice.
+Briefing, proposals and chat inform your own decisions; they are not financial or tax advice.
 
 ## Claude models and cost
 
@@ -59,7 +58,6 @@ documents in November 2026:
 | *Try again* on an upload | Opus 5.5 | A second reading after a failed or poor one; Sonnet missed the account match in the test | ~$0.05 |
 | Briefing: web research | Sonnet 5.5 | Input-heavy (search results); Haiku ran out of searches and left gaps | ~$0.32 (incl. $0.15 for 15 searches) |
 | Briefing: writing | Opus 5.5, effort high | The judgment you act on; small input, so the best model costs little | ~$0.14 |
-| Tax estimate | Sonnet 5.5 research, Opus 5.5 arithmetic | Same split as the briefing | ~$0.45 |
 | Ask (chat) | Sonnet 5.5 with web search | Good answers with a few searches; per question | ~$0.08 |
 
 About $2 a month with weekly briefings. **Family → Claude usage** shows this month's cost per task.
@@ -74,7 +72,7 @@ Override per task with e.g. `CLAUDE_MODEL_EXTRACT=claude-sonnet-5-5` or `CLAUDE_
   in a sandbox (no scripts), CSV as plain text.
 - Strict Content-Security-Policy, no framing, HSTS.
 - Claude spending is capped: 30 uploads an hour per person, 10 second readings an hour, 3 briefings and
-  3 tax estimates a day, 40 chat questions a day per person.
+  3 savings plan proposals a day per person, 40 chat questions a day per person.
 - The upload token for the iPhone Shortcut can only upload; replace it under Family if a phone is lost.
 
 ## Run locally

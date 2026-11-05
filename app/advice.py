@@ -65,6 +65,8 @@ def pension_overview(today: date | None = None) -> list[dict]:
                 "pillar2_buyin": u["pillar2_buyin"], "pillar2_buyin_as_of": u["pillar2_buyin_as_of"],
                 "three_a_accounts": len(three_a), "canton": u["canton"], "municipality": u["municipality"],
                 "married": u["married"], "children": u["children"], "taxable_income": u["taxable_income"],
+                "preferred_broker": u["preferred_broker"], "savings_budget": u["savings_budget"],
+                "risk_profile": u["risk_profile"], "invest_notes": u["invest_notes"],
             })
     return out
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FinanceAgent</title>
-  <link rel="stylesheet" href="styles.css?v=12">
+  <link rel="stylesheet" href="styles.css?v=13">
 </head>
 <body>
   <header class="top">
@@ -136,6 +136,8 @@
       <div class="card">
         <h2>Monthly savings</h2>
         <div id="savings"></div>
+        <h4 class="sub-head">Your savings plan proposal</h4>
+        <div id="proposal"></div>
       </div>
       <div class="card">
         <div class="upload-head"><h2>Pillar 2 &amp; 3a</h2><button class="link small" data-goto="family">Edit profiles</button></div>
@@ -145,8 +147,8 @@
         <div class="upload-head"><h2>Taxes</h2>
           <label class="inline-label">Tax year <select id="tax-year"></select></label></div>
         <div id="tax"></div>
-        <h4 class="sub-head">Estimate and ways to save</h4>
-        <div id="tax-estimate"></div>
+        <p class="muted small">Ways to pay less tax: ask in <button class="link" data-goto="ask">Ask</button>, e.g. "What can I do this year to
+          save tax?". It knows your 3a, pension fund and canton.</p>
       </div>
       <div class="card">
         <div class="upload-head"><h2>Weekly briefing</h2><button id="write-briefing" class="ghost">Write now</button></div>
@@ -241,6 +243,6 @@
   <datalist id="bank-options"></datalist>
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=15"></script>
+  <script src="app.js?v=16"></script>
 </body>
 </html>
