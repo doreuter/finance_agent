@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 
 import pytest
@@ -553,8 +554,9 @@ def test_briefing_failure_is_recorded(client, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     with pytest.raises(briefing.BriefingError):
         briefing.generate()
-    b = client.get("/api/briefing").json()
-    assert "API key" in b["last_error"] and not b["running"]
+    r = client.post("/api/briefing")
+    assert r.status_code == 422 and "API key" in r.json()["detail"]
+    assert briefing.due()  # nothing was paid for, so Monday's run still happens
 
 
 def test_usage_is_recorded_with_cost(client):
@@ -920,3 +922,54 @@ def test_claude_errors_are_explained():
     e = anthropic.BadRequestError("Error code: 400 - Your credit balance is too low to access the Anthropic API.",
                                   response=response, body=None)
     assert "credit is used up" in research.claude_error(e)
+
+
+def test_monthly_budget_pauses_claude_features(client, monkeypatch):
+    from app import usage
+    monkeypatch.setenv("CLAUDE_MONTHLY_BUDGET_USD", "1")
+    usage.check_budget()
+    from types import SimpleNamespace
+    usage.record("chat", "claude-sonnet-5-5", SimpleNamespace(input_tokens=500_000, output_tokens=0))  # $1.00
+    assert client.post("/api/chat", json={"messages": [{"role": "user", "content": "Hi"}]}).status_code == 429
+    assert client.post("/api/briefing").status_code == 429
+    u = client.get("/api/usage").json()
+    assert u["budget_usd"] == 1 and u["total_usd"] >= 1
+    monkeypatch.setenv("CLAUDE_MONTHLY_BUDGET_USD", "0")  # no limit
+    usage.check_budget()
+
+
+def test_cached_tokens_cost_less():
+    from app import usage
+    full = usage.cost("claude-sonnet-5-5", 100_000, 0)
+    assert usage.cost("claude-sonnet-5-5", 0, 0, cache_read=100_000) == pytest.approx(full * 0.1)
+    assert usage.cost("claude-opus-5-5", 0, 0, cache_read=100_000) == pytest.approx(usage.cost("claude-opus-5-5", 100_000, 0) * 0.05)
+
+
+def test_failed_or_interrupted_briefing_is_not_retried_automatically(client):
+    from app import briefing, db
+    assert briefing.due()
+    with db.connect() as conn:
+        conn.execute("INSERT INTO briefings (week, status) VALUES (?, 'running')", (briefing.iso_week(date.today()),))
+    briefing.mark_interrupted()
+    assert briefing.latest()["last_error"] == "interrupted by a restart" and not briefing.latest()["running"]
+    assert not briefing.due()
+
+
+def test_briefing_without_positions_leaves_no_attempt(client, monkeypatch):
+    from app import briefing
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    with pytest.raises(briefing.BriefingError):
+        briefing.generate(client=object())
+    assert briefing.due()
+
+
+def test_broker_research_is_reused_for_a_month(client):
+    from app import db, proposal
+    with db.connect() as conn:
+        conn.execute("INSERT INTO savings_proposals (user_id, status, content_json) VALUES (1, 'done', ?)",
+                     (json.dumps({"proposal": {}, "sources": [], "memo": "Neon memo", "research_broker": "Neon"}),))
+        conn.execute("INSERT INTO savings_proposals (user_id, status, content_json, created_at) VALUES "
+                     "(1, 'done', ?, datetime('now', '-40 days'))",
+                     (json.dumps({"proposal": {}, "sources": [], "memo": "old", "research_broker": "Yuh"}),))
+    assert proposal.cached_research(" neon ")[0] == "Neon memo"
+    assert proposal.cached_research("Yuh") is None

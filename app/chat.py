@@ -12,10 +12,11 @@ import anthropic
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import advice, config, db, proposal, research, savings, tax, valuation
+from . import advice, config, db, proposal, research, savings, tax, usage, valuation
 
 router = APIRouter()
 MAX_QUESTIONS_PER_DAY = 40
+MAX_SEARCHES = 3  # most questions need one or two lookups; each search adds several thousand tokens
 
 SYSTEM = """You are FinanceAgent, the assistant in a Swiss family's private finance app. You answer their \
 questions about their own money: accounts, investments and ETF savings plans, pillar 2 and 3a, and Swiss \
@@ -91,7 +92,7 @@ def family_context(owner_name: str, owner_id: int | None = None) -> str:
 def ask(client: anthropic.Anthropic, messages: list[dict], context: str) -> dict:
     system = f"{SYSTEM}\n\n<family_data>\n{context}\n</family_data>"
     try:
-        content = research.run(client, "chat", system, messages, max_searches=5, max_tokens=6000)
+        content = research.run(client, "chat", system, messages, max_searches=MAX_SEARCHES, max_tokens=6000)
     except research.ResearchError:
         return {"text": "I can't help with that one.", "sources": []}
     text, sources = research.text_and_sources(content, limit=10)
@@ -108,6 +109,10 @@ def chat(body: ChatIn, request: Request):
                    user["id"])["n"]
         if n >= MAX_QUESTIONS_PER_DAY:
             raise HTTPException(429, f"At most {MAX_QUESTIONS_PER_DAY} questions a day; more tomorrow")
+        try:
+            usage.check_budget()
+        except usage.BudgetExceeded as e:
+            raise HTTPException(429, str(e))
         conn.execute("INSERT INTO chat_log (user_id) VALUES (?)", (user["id"],))
     if not config.anthropic_key():
         raise HTTPException(503, "Claude API key missing: set ANTHROPIC_API_KEY")

@@ -56,11 +56,20 @@ documents in November 2026:
 |---|---|---|---|
 | Reading an upload | Haiku 5.5 | Read a Neon screenshot exactly like Opus (5/5 positions, right account), 33× cheaper | ~$0.001 |
 | *Try again* on an upload | Opus 5.5 | A second reading after a failed or poor one; Sonnet missed the account match in the test | ~$0.05 |
-| Briefing: web research | Sonnet 5.5 | Input-heavy (search results); Haiku ran out of searches and left gaps | ~$0.32 (incl. $0.15 for 15 searches) |
+| Briefing: web research | Sonnet 5.5 | Input-heavy (search results); Haiku ran out of searches and left gaps | ~$0.15 (up to 8 searches, cached) |
 | Briefing: writing | Opus 5.5, effort high | The judgment you act on; small input, so the best model costs little | ~$0.14 |
-| Ask (chat) | Sonnet 5.5 with web search | Good answers with a few searches; per question | ~$0.08 |
+| Savings plan proposal | Sonnet 5.5 researches the broker, Opus 5.5 proposes | The broker's offer is reused for 30 days, so a new proposal usually costs only the writing | ~$0.12, or ~$0.30 with fresh research |
+| Ask (chat) | Sonnet 5.5 with web search | Good answers with up to 3 searches; per question | ~$0.04 |
 
 About $2 a month with weekly briefings. **Family → Claude usage** shows this month's cost per task.
+
+Keeping it low:
+- **Monthly budget** (`CLAUDE_MONTHLY_BUDGET_USD`, default 10; 0 = none): once reached, briefings, proposals
+  and Ask pause until the 1st; uploads keep working.
+- **Prompt caching** on all web research: each search step re-reads the results before it, and cached
+  re-reads cost a tenth.
+- **One automatic briefing a week:** one that failed or was cut off by a restart (e.g. a deploy) is not
+  started over; the next comes the following Monday, or press *Write now*.
 Override per task with e.g. `CLAUDE_MODEL_EXTRACT=claude-sonnet-5-5` or `CLAUDE_EFFORT_BRIEFING=medium`.
 
 ## Security

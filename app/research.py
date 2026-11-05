@@ -28,14 +28,18 @@ def claude_error(e: Exception) -> str:
 def run(client: anthropic.Anthropic, task: str, system: str, messages: list[dict], max_searches: int,
         max_tokens: int = 16000) -> list:
     """One Claude turn with web search, resumed while the server's search loop pauses (pause_turn).
-    Returns the turn's content blocks; usage is recorded under `task`."""
+    Returns the turn's content blocks; usage is recorded under `task`.
+
+    Prompt caching: each search step re-reads everything before it (the results pile up), so the system prompt
+    is cached explicitly and the growing tail automatically; re-reads then cost a tenth of the input price."""
     model, effort = config.model_for(task)
     tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": max_searches}]
+    system_blocks = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
     content = []
     for _ in range(MAX_CONTINUATIONS + 1):
         convo = messages + ([{"role": "assistant", "content": content}] if content else [])
-        with client.messages.stream(model=model, max_tokens=max_tokens, system=system, messages=convo, tools=tools,
-                                    output_config={"effort": effort}) as stream:
+        with client.messages.stream(model=model, max_tokens=max_tokens, system=system_blocks, messages=convo, tools=tools,
+                                    output_config={"effort": effort}, cache_control={"type": "ephemeral"}) as stream:
             response = stream.get_final_message()
         usage.record(task, model, response.usage)
         if response.stop_reason == "refusal":

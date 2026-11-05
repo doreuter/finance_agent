@@ -23,6 +23,7 @@ logger = logging.getLogger("financeagent")
 router = APIRouter()
 MAX_PER_DAY = 3
 MAX_SEARCHES = 6  # one broker's offer; each search loads long pages (10 searches cost ~230k input tokens)
+RESEARCH_DAYS = 30  # a broker's savings plan offer changes rarely: reuse its research for a month
 
 
 class ProposalError(Exception):
@@ -112,6 +113,18 @@ def _write(client: anthropic.Anthropic, data: dict, memo: str) -> Proposal:
     return response.parsed_output
 
 
+def cached_research(broker: str) -> tuple[str, list[dict]] | None:
+    """The memo of a proposal for the same broker (any family member) from the last RESEARCH_DAYS days."""
+    with db.connect() as conn:
+        rows = db.rows(conn, "SELECT content_json FROM savings_proposals WHERE status = 'done' "
+                             "AND created_at > datetime('now', ?) ORDER BY id DESC", f"-{RESEARCH_DAYS} days")
+    for row in rows:
+        content = json.loads(row["content_json"])
+        if content.get("memo") and (content.get("research_broker") or "").casefold() == broker.strip().casefold():
+            return content["memo"], content.get("sources", [])
+    return None
+
+
 def generate(user_id: int, client: anthropic.Anthropic | None = None) -> int:
     with db.connect() as conn:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
@@ -122,22 +135,25 @@ def generate(user_id: int, client: anthropic.Anthropic | None = None) -> int:
         data = context(user_id)
         if not data["broker"] or not data["monthly_budget_chf"]:
             raise ProposalError("Set your broker and monthly amount first")
+        usage.check_budget()
         if client is None:
             if not config.anthropic_key():
                 raise ProposalError("Claude API key missing: set ANTHROPIC_API_KEY")
             client = anthropic.Anthropic()
-        memo, sources = research.memo(client, "proposal_research", RESEARCH_SYSTEM,
-                                      f"Broker: {data['broker']} (Switzerland). Today is {data['today']}. "
-                                      "Research its ETF savings plan offer.", MAX_SEARCHES)
+        cached = cached_research(data["broker"])
+        memo, sources = cached or research.memo(client, "proposal_research", RESEARCH_SYSTEM,
+                                                f"Broker: {data['broker']} (Switzerland). Today is {data['today']}. "
+                                                "Research its ETF savings plan offer.", MAX_SEARCHES)
         result = _write(client, data, memo)
-    except (ProposalError, research.ResearchError, anthropic.APIError) as e:
+    except (ProposalError, research.ResearchError, usage.BudgetExceeded, anthropic.APIError) as e:
         message = research.claude_error(e)
         with db.connect() as conn:
             conn.execute("UPDATE savings_proposals SET status = 'failed', error = ? WHERE id = ?", (message, proposal_id))
         raise ProposalError(message) from e
     with db.connect() as conn:
         conn.execute("UPDATE savings_proposals SET status = 'done', content_json = ? WHERE id = ?",
-                     (json.dumps({"proposal": result.model_dump(), "sources": sources[:25]}), proposal_id))
+                     (json.dumps({"proposal": result.model_dump(), "sources": sources[:25], "memo": memo,
+                                  "research_broker": data["broker"]}), proposal_id))
     return proposal_id
 
 
@@ -148,7 +164,9 @@ def latest(user_id: int) -> dict:
     out = {"running": bool(last and last["status"] == "running"),
            "last_error": last["error"] if last and last["status"] == "failed" else None}
     if done:
-        out.update({"id": done["id"], "created_at": done["created_at"], **json.loads(done["content_json"])})
+        content = json.loads(done["content_json"])
+        content.pop("memo", None)
+        out.update({"id": done["id"], "created_at": done["created_at"], **content})
     return out
 
 
@@ -176,6 +194,10 @@ def start_proposal(request: Request, background: BackgroundTasks):
                    user["id"])["n"]
     if n >= MAX_PER_DAY:
         raise HTTPException(429, f"At most {MAX_PER_DAY} proposals a day")
+    try:
+        usage.check_budget()
+    except usage.BudgetExceeded as e:
+        raise HTTPException(429, str(e))
     background.add_task(_run, user["id"])
     return {"ok": True}
 

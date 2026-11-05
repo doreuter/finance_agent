@@ -66,6 +66,7 @@ def _refresh_loop(stop: threading.Event) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    briefing.mark_interrupted()
     advice.sync_tasks()
     stop = threading.Event()
     if not os.environ.get("FINANCE_NO_REFRESH"):
@@ -643,6 +644,14 @@ def start_briefing(background: BackgroundTasks):
     with db.connect() as conn:
         if _recent(conn, "SELECT COUNT(*) AS n FROM briefings WHERE created_at > datetime('now', '-1 day')") >= MAX_BRIEFINGS_PER_DAY:
             raise HTTPException(429, f"At most {MAX_BRIEFINGS_PER_DAY} briefings a day; the next one comes on Monday")
+    try:
+        usage.check_budget()
+    except usage.BudgetExceeded as e:
+        raise HTTPException(429, str(e))
+    try:
+        briefing.precheck()
+    except briefing.BriefingError as e:
+        raise HTTPException(422, str(e))
     background.add_task(_run_briefing)
     return {"ok": True}
 

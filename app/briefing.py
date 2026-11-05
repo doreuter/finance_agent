@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from . import advice, config, db, research, savings, usage, valuation
 
 logger = logging.getLogger("financeagent")
-MAX_SEARCHES = 15
+MAX_SEARCHES = 8  # the week's news for the holdings; more searches mostly re-read the same stories
 STALE_RUNNING = timedelta(minutes=30)  # a 'running' briefing older than this died with a restart
 
 
@@ -157,8 +157,24 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "task"
 
 
+def precheck(client: anthropic.Anthropic | None = None) -> dict:
+    """The checks that cost nothing, before a briefing starts; returns the context. They leave no row, so only
+    real (paid) attempts count for due()."""
+    if client is None and not config.anthropic_key():
+        raise BriefingError("Claude API key missing: set ANTHROPIC_API_KEY")
+    try:
+        usage.check_budget()
+    except usage.BudgetExceeded as e:
+        raise BriefingError(str(e)) from e
+    data = context()
+    if not data["positions"]:
+        raise BriefingError("No positions yet: add your depot's positions first")
+    return data
+
+
 def generate(client: anthropic.Anthropic | None = None) -> int:
     """Run a briefing now and store it; returns its id. Raises BriefingError when one is already running."""
+    data = precheck(client)
     with db.connect() as conn:
         cutoff = (datetime.now(timezone.utc) - STALE_RUNNING).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE briefings SET status = 'failed', error = 'interrupted' WHERE status = 'running' AND created_at < ?",
@@ -168,13 +184,7 @@ def generate(client: anthropic.Anthropic | None = None) -> int:
         briefing_id = conn.execute("INSERT INTO briefings (week, status) VALUES (?, 'running')",
                                    (iso_week(date.today()),)).lastrowid
     try:
-        if client is None:
-            if not config.anthropic_key():
-                raise BriefingError("Claude API key missing: set ANTHROPIC_API_KEY")
-            client = anthropic.Anthropic()
-        data = context()
-        if not data["positions"]:
-            raise BriefingError("No positions yet: add your depot's positions first")
+        client = client or anthropic.Anthropic()
         memo, sources = _research(client, data)
         result = _write(client, data, memo)
     except (BriefingError, anthropic.APIError) as e:
@@ -191,11 +201,18 @@ def generate(client: anthropic.Anthropic | None = None) -> int:
 
 
 def due(today: date | None = None) -> bool:
-    """Weekly from Monday: no finished briefing this week yet and fewer than 3 failed tries."""
+    """Weekly from Monday, one automatic try: a briefing that failed or was cut off by a restart already cost
+    money, so it is not started over; the next comes the following Monday (or press "Write now")."""
     today = today or date.today()
     with db.connect() as conn:
-        rows = db.rows(conn, "SELECT status FROM briefings WHERE week = ?", iso_week(today))
-    return not any(r["status"] in ("done", "running") for r in rows) and sum(r["status"] == "failed" for r in rows) < 3
+        return not db.row(conn, "SELECT 1 FROM briefings WHERE week = ?", iso_week(today))
+
+
+def mark_interrupted() -> None:
+    """At startup nothing is running: briefings and proposals still marked 'running' died with the restart."""
+    with db.connect() as conn:
+        for table in ("briefings", "savings_proposals"):
+            conn.execute(f"UPDATE {table} SET status = 'failed', error = 'interrupted by a restart' WHERE status = 'running'")
 
 
 def latest() -> dict | None:

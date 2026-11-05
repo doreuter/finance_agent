@@ -61,6 +61,14 @@ def model_for(task: str) -> tuple[str, str]:
     return os.environ.get(f"CLAUDE_MODEL_{key}") or model, os.environ.get(f"CLAUDE_EFFORT_{key}") or effort
 
 
+def monthly_budget() -> float:
+    """Claude spending per month (USD) after which briefings, proposals and Ask pause; 0 = no limit."""
+    try:
+        return max(0.0, float(os.environ.get("CLAUDE_MONTHLY_BUDGET_USD", "10")))
+    except ValueError:
+        return 10.0
+
+
 def refresh_hours() -> float:
     """How often the background job fetches prices and records the day's values."""
     return float(os.environ.get("REFRESH_HOURS", "6"))

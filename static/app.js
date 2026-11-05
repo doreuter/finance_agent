@@ -1458,7 +1458,12 @@ async function loadUsage() {
   const u = await api("/api/usage");
   const usd = (v) => `$${(v || 0).toFixed(2)}`;
   const month = new Date(u.month + "-01T00:00:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-  $("#usage").innerHTML = `<p class="small">${esc(month)}: <strong>${usd(u.total_usd)}</strong>
+  const budget = u.budget_usd
+    ? (u.total_usd >= u.budget_usd
+      ? ` of ${usd(u.budget_usd)} budget · <strong>used up</strong>: briefings, proposals and Ask resume on the 1st; uploads keep working`
+      : ` of ${usd(u.budget_usd)} budget`)
+    : "";
+  $("#usage").innerHTML = `<p class="small">${esc(month)}: <strong>${usd(u.total_usd)}</strong>${budget}
       <span class="muted">· each task uses the cheapest model that does it well</span></p>
     ${u.by_task.length ? `<div class="table-wrap"><table><thead><tr><th>Task</th><th class="hide-sm">Model</th><th class="num">Calls</th>
       <th class="num hide-sm">Searches</th><th class="num">Cost</th></tr></thead><tbody>${u.by_task.map((r) => `<tr>
